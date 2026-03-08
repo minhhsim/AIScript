@@ -881,11 +881,10 @@ elif current_page == "video":
 # ════════════════════════════════════════════════════════════════════
 elif current_page == "url":
     st.markdown("# 🔗 URL Video Analyzer")
-    st.markdown('<p style="color:#6b6b8a">Analyze any YouTube or TikTok video by URL. Deep script intelligence + interactive visual connection map.</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#6b6b8a">Analyze any YouTube or TikTok video by URL — auto-detects video type and tailors analysis for dance, voiceover, tutorial, comedy, and more.</p>', unsafe_allow_html=True)
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    from modules.url_analyzer import analyze_url, build_analysis_graph
-    from modules.script_analyzer import analyze_script
+    from modules.url_analyzer import analyze_url, build_analysis_graph, detect_video_type, analyze_script_typed, generate_visual_direction
     import math
 
     col_input, col_meta = st.columns([3, 2])
@@ -938,7 +937,7 @@ elif current_page == "url":
         status = st.empty()
 
         status.markdown('<div class="info-box">📡 Fetching video metadata...</div>', unsafe_allow_html=True)
-        progress.progress(15)
+        progress.progress(10)
 
         url_data = analyze_url(client, video_url.strip())
 
@@ -946,20 +945,50 @@ elif current_page == "url":
             st.error(f"❌ {url_data['error']}")
             st.markdown('<div class="warn-box">Make sure yt-dlp is installed: <code>pip install yt-dlp</code></div>', unsafe_allow_html=True)
         else:
-            meta = url_data.get("metadata", {})
+            meta          = url_data.get("metadata", {})
             transcription = url_data.get("transcription", "")
 
-            status.markdown('<div class="info-box">🧠 Running script analysis...</div>', unsafe_allow_html=True)
-            progress.progress(55)
+            # ── Step 1: Detect video type ─────────────────────────────────────
+            status.markdown('<div class="info-box">🔍 Detecting video type...</div>', unsafe_allow_html=True)
+            progress.progress(25)
+            video_type = detect_video_type(client, transcription, meta)
 
-            analysis = analyze_script(client, transcription, platform_url)
+            # ── Step 2: Type-specific analysis ────────────────────────────────
+            status.markdown(f'<div class="info-box">🧠 Analyzing as {video_type["label"]}...</div>', unsafe_allow_html=True)
+            progress.progress(50)
+            analysis = analyze_script_typed(client, transcription, platform_url, video_type)
 
-            status.markdown('<div class="info-box">🕸️ Building connection map...</div>', unsafe_allow_html=True)
-            progress.progress(85)
+            # ── Step 3: Visual storyboard ─────────────────────────────────────
+            status.markdown('<div class="info-box">🎬 Generating visual storyboard...</div>', unsafe_allow_html=True)
+            progress.progress(70)
+            shots = generate_visual_direction(client, transcription, platform_url, video_type)
 
-            graph_data = build_analysis_graph(analysis, meta)
+            # ── Step 4: Network graph ─────────────────────────────────────────
+            status.markdown('<div class="info-box">🕸️ Building intelligence map...</div>', unsafe_allow_html=True)
+            progress.progress(90)
+            graph_data = build_analysis_graph(analysis, meta, video_type)
             progress.progress(100)
             status.empty()
+
+            # ── Video type banner ─────────────────────────────────────────────
+            vt_color = video_type.get("color", "#7c3aed")
+            st.markdown(f"""
+<div style="background:linear-gradient(135deg,{vt_color}22,transparent);border:1px solid {vt_color}44;border-left:4px solid {vt_color};border-radius:12px;padding:16px 20px;margin-bottom:16px;display:flex;align-items:center;gap:16px">
+  <span style="font-size:2rem">{video_type.get("icon","🎬")}</span>
+  <div style="flex:1">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+      <span style="color:{vt_color};font-family:Syne;font-weight:700;font-size:1rem">{video_type.get("label","")}</span>
+      <span class="tag" style="border-color:{vt_color}44;color:{vt_color}">Confidence: {video_type.get("confidence",0)}%</span>
+      <span class="tag">{video_type.get("subtype","")}</span>
+    </div>
+    <p style="color:#9090b0;font-size:0.85rem;margin:0">{video_type.get("reasoning","")}</p>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+    {"<span class='tag'>🗣️ Speech</span>" if video_type.get("has_speech") else ""}
+    {"<span class='tag'>🎵 Music</span>" if video_type.get("has_music") else ""}
+    <span class="tag">⚡ {video_type.get("pacing","").title()} Pacing</span>
+  </div>
+</div>""", unsafe_allow_html=True)
 
             # ── Video metadata banner ─────────────────────────────────────────
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -1106,9 +1135,59 @@ elif current_page == "url":
             st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
             # ── Detail tabs ────────────────────────────────────────────────────
-            tab1, tab2, tab3, tab4 = st.tabs(["🎣 Hook & Emotion", "🏗️ Structure & Tone", "📜 Transcript", "💡 Action Plan"])
+            tab1, tab2, tab3, tab4, tab5 = st.tabs(["🎬 Storyboard", "🎣 Hook & Emotion", "🏗️ Structure & Tone", "📜 Transcript", "💡 Action Plan"])
 
             with tab1:
+                if shots:
+                    st.markdown(f'<p style="color:#9090b0;font-size:0.85rem">Shot-by-shot visual direction tailored for <strong style="color:{vt_color}">{video_type.get("label","")}</strong> content.</p>', unsafe_allow_html=True)
+                    for i, shot in enumerate(shots):
+                        mood_color = shot.get("color_mood", vt_color)
+                        if not mood_color.startswith("#") or len(mood_color) not in [4,7]:
+                            mood_color = vt_color
+                        icon = shot.get("icon","🎥")
+                        st.markdown(f"""
+<div style="background:#0f0f1a;border:1px solid #1e1e30;border-left:4px solid {mood_color};border-radius:12px;padding:18px;margin-bottom:14px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+    <div style="background:{mood_color}22;border:1px solid {mood_color}44;border-radius:50%;width:36px;height:36px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0">{icon}</div>
+    <div>
+      <span style="color:{mood_color};font-family:Syne;font-weight:700;font-size:0.85rem">SHOT {shot.get("shot_number",i+1)}</span>
+      <span style="color:#6b6b8a;font-size:0.78rem;margin-left:8px">{shot.get("timestamp","")}</span>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:5px;flex-wrap:wrap">
+      <span class="tag" style="color:{mood_color};border-color:{mood_color}44">{shot.get("shot_type","")}</span>
+      <span class="tag">{shot.get("camera_angle","")}</span>
+      <span class="tag">{shot.get("camera_movement","")}</span>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+    <div><p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">Subject</p><p style="color:#d0d0e8;font-size:0.88rem;margin:0">{shot.get("subject","—")}</p></div>
+    <div><p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">Action</p><p style="color:#d0d0e8;font-size:0.88rem;margin:0">{shot.get("action","—")}</p></div>
+    <div><p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">Lighting</p><p style="color:#d0d0e8;font-size:0.88rem;margin:0">{shot.get("lighting","—")}</p></div>
+    <div><p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">Emotion Target</p><p style="color:{mood_color};font-size:0.88rem;margin:0;font-weight:600">{shot.get("emotion_target","—")}</p></div>
+  </div>
+  <div style="background:#0a0a14;border-radius:8px;padding:8px 12px;margin-bottom:8px;border-left:2px solid {mood_color}55">
+    <p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">Script / Audio</p>
+    <p style="color:#e8e8f0;font-style:italic;font-size:0.88rem;margin:0">"{shot.get("script_line","—")}"</p>
+  </div>
+  <div style="background:{mood_color}11;border-radius:8px;padding:8px 12px;border:1px solid {mood_color}22">
+    <p style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase;margin:0 0 3px 0">🎯 Director Note</p>
+    <p style="color:{mood_color};font-size:0.85rem;margin:0">{shot.get("director_note","—")}</p>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                    sb_text = "\n\n".join([
+                        f"SHOT {s.get('shot_number',i+1)} [{s.get('timestamp','')}]\n"
+                        f"Type: {s.get('shot_type','')} | Angle: {s.get('camera_angle','')} | Move: {s.get('camera_movement','')}\n"
+                        f"Subject: {s.get('subject','')}\nAction: {s.get('action','')}\n"
+                        f"Lighting: {s.get('lighting','')} | Emotion: {s.get('emotion_target','')}\n"
+                        f'Audio: "{s.get("script_line","")}"\nDirector Note: {s.get("director_note","")}'
+                        for i, s in enumerate(shots)
+                    ])
+                    st.download_button("⬇️ Download Storyboard", sb_text, file_name="storyboard.txt", mime="text/plain")
+                else:
+                    st.info("Storyboard could not be generated. Try again.")
+
+            with tab2:
                 hook = analysis.get("hook", {})
                 emotion = analysis.get("emotional_arc", {})
 
@@ -1162,7 +1241,7 @@ elif current_page == "url":
                 if hook.get("improved_version"):
                     st.markdown(f'<div class="info-box">✨ <strong>Improved Hook:</strong> {hook["improved_version"]}</div>', unsafe_allow_html=True)
 
-            with tab2:
+            with tab3:
                 structure = analysis.get("structure", {})
                 tone = analysis.get("tone_voice", {})
                 s1, s2 = st.columns(2)
@@ -1193,7 +1272,7 @@ elif current_page == "url":
 <div style="margin-top:8px">{"".join([f'<span class="tag">{t}</span>' for t in traits])}</div>
 </div>""", unsafe_allow_html=True)
 
-            with tab3:
+            with tab4:
                 if transcription:
                     st.markdown(f'<div class="script-output">{transcription}</div>', unsafe_allow_html=True)
                     st.download_button("⬇️ Download Transcript", transcription, file_name="transcript.txt", mime="text/plain")
@@ -1204,7 +1283,7 @@ elif current_page == "url":
                 else:
                     st.info("No transcript available.")
 
-            with tab4:
+            with tab5:
                 for item in analysis.get("actionable_improvements", []):
                     pri = item.get("priority", "Low")
                     badge = f'<span class="badge-{"high" if pri=="High" else "medium" if pri=="Medium" else "low"}">{pri}</span>'
