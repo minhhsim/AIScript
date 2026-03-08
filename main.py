@@ -4,13 +4,11 @@ import os
 import sys
 import time
 import tempfile
-
 import json
 import plotly.graph_objects as go
 import plotly.express as px
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, BASE_DIR)
+sys.path.insert(0, os.path.dirname(__file__))
 
 from apikeys import groq_key
 from groq import Groq
@@ -277,6 +275,8 @@ with st.sidebar:
         "📝 Script Analyzer": "analyzer",
         "✍️ Script Generator": "generator",
         "🎬 Video Feedback": "video",
+        "🔗 URL Analyzer": "url",
+        "💬 Script Chat": "chat",
     }
     page = st.radio("", list(pages.keys()), label_visibility="collapsed")
     current_page = pages[page]
@@ -691,7 +691,6 @@ elif current_page == "video":
             type=["mp4", "mov", "avi", "mkv"],
             label_visibility="collapsed"
         )
-
         if video_file:
             st.video(video_file)
 
@@ -701,38 +700,40 @@ elif current_page == "video":
         st.markdown("")
         analyze_video_btn = st.button("⚡ Analyze Video")
         st.markdown("")
-        st.markdown('<div class="info-box">Analysis includes:<br>• Audio transcription<br>• Frame-by-frame visual analysis<br>• Script quality scoring<br>• Retention prediction<br>• Improvement roadmap</div>', unsafe_allow_html=True)
+        st.markdown('<div class="info-box">Analysis includes:<br>• Audio transcription (Whisper)<br>• 4 key frame visual analysis<br>• Script quality scoring<br>• Retention prediction<br>• Priority improvement roadmap</div>', unsafe_allow_html=True)
 
     if analyze_video_btn and video_file:
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-        # Save video to temp file
         with tempfile.NamedTemporaryFile(suffix=f".{video_file.name.split('.')[-1]}", delete=False) as tmp:
             tmp.write(video_file.read())
             tmp_path = tmp.name
 
-        steps = st.empty()
         progress_bar = st.progress(0)
+        status_box = st.empty()
 
-        steps.markdown('<div class="info-box">🎵 Step 1/4: Extracting audio and transcribing...</div>', unsafe_allow_html=True)
+        status_box.markdown('<div class="info-box">🖼️ Extracting frames...</div>', unsafe_allow_html=True)
         progress_bar.progress(10)
 
-        with st.spinner("Running full video analysis pipeline..."):
-            steps.markdown('<div class="info-box">🖼️ Step 2/4: Extracting key frames...</div>', unsafe_allow_html=True)
+        results = {}
+        try:
+            status_box.markdown('<div class="info-box">🎵 Transcribing audio...</div>', unsafe_allow_html=True)
             progress_bar.progress(30)
-
             results = analyze_video_file(client, tmp_path, platform_v)
-
-            steps.markdown('<div class="info-box">🧠 Step 3/4: Running AI visual analysis...</div>', unsafe_allow_html=True)
-            progress_bar.progress(70)
-
-            steps.markdown('<div class="info-box">📊 Step 4/4: Generating report...</div>', unsafe_allow_html=True)
-            progress_bar.progress(95)
+            progress_bar.progress(90)
+        except Exception as e:
+            st.error(f"Analysis pipeline error: {e}")
+            results = {"report": {"error": str(e)}, "transcription": "", "visual_analysis": "", "steps": []}
 
         progress_bar.progress(100)
-        steps.empty()
+        status_box.empty()
 
-        # Clean up temp file
+        # Show pipeline step log
+        if results.get("steps"):
+            with st.expander("🔍 Pipeline Log"):
+                for step in results["steps"]:
+                    st.markdown(f'<span style="color:#9090b0;font-size:0.85rem">{step}</span>', unsafe_allow_html=True)
+
         try:
             os.remove(tmp_path)
         except Exception:
@@ -874,3 +875,536 @@ elif current_page == "video":
 
     elif analyze_video_btn:
         st.warning("Please upload a video first.")
+
+# ════════════════════════════════════════════════════════════════════
+# PAGE: URL ANALYZER
+# ════════════════════════════════════════════════════════════════════
+elif current_page == "url":
+    st.markdown("# 🔗 URL Video Analyzer")
+    st.markdown('<p style="color:#6b6b8a">Analyze any YouTube or TikTok video by URL. Deep script intelligence + interactive visual connection map.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    from modules.url_analyzer import analyze_url, build_analysis_graph
+    from modules.script_analyzer import analyze_script
+    import math
+
+    col_input, col_meta = st.columns([3, 2])
+
+    with col_input:
+        st.markdown("### 🌐 Video URL")
+        video_url = st.text_input(
+            "Paste URL",
+            placeholder="https://www.youtube.com/watch?v=... or https://www.tiktok.com/@user/video/...",
+            label_visibility="collapsed"
+        )
+        platform_url = st.selectbox("Platform context", ["TikTok", "YouTube Shorts", "YouTube Long-form", "Instagram Reels"])
+
+        import shutil as _shutil, sys as _sys, subprocess as _sp2
+        if _shutil.which("yt-dlp"):
+            _ytdlp_ok = True
+        else:
+            try:
+                _ytdlp_ok = _sp2.run([_sys.executable, "-m", "yt_dlp", "--version"],
+                                      capture_output=True, timeout=10).returncode == 0
+            except Exception:
+                _ytdlp_ok = False
+
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            fetch_btn = st.button("⚡ Analyze Video")
+        with col_b2:
+            if _ytdlp_ok:
+                st.markdown('<div class="info-box" style="margin-top:0;border-color:#10b981">✅ yt-dlp ready</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="info-box" style="margin-top:0;border-color:#ef4444">⚠️ Run: <code>pip install yt-dlp</code></div>', unsafe_allow_html=True)
+
+    with col_meta:
+        st.markdown("### 💡 What You Get")
+        st.markdown("""
+<div class="section-card">
+<div class="strength-item"><span style="color:#7c3aed">◆</span> Full transcript from any video</div>
+<div class="strength-item"><span style="color:#06b6d4">◆</span> Interactive node connection map</div>
+<div class="strength-item"><span style="color:#10b981">◆</span> Hook · Emotion · Structure scores</div>
+<div class="strength-item"><span style="color:#f59e0b">◆</span> Platform fit analysis</div>
+<div class="strength-item"><span style="color:#ec4899">◆</span> Emotional journey visualization</div>
+<div class="strength-item"><span style="color:#8b5cf6">◆</span> Strengths & weakness nodes</div>
+</div>
+""", unsafe_allow_html=True)
+
+    if fetch_btn and video_url.strip():
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+        progress = st.progress(0)
+        status = st.empty()
+
+        status.markdown('<div class="info-box">📡 Fetching video metadata...</div>', unsafe_allow_html=True)
+        progress.progress(15)
+
+        url_data = analyze_url(client, video_url.strip())
+
+        if url_data.get("error"):
+            st.error(f"❌ {url_data['error']}")
+            st.markdown('<div class="warn-box">Make sure yt-dlp is installed: <code>pip install yt-dlp</code></div>', unsafe_allow_html=True)
+        else:
+            meta = url_data.get("metadata", {})
+            transcription = url_data.get("transcription", "")
+
+            status.markdown('<div class="info-box">🧠 Running script analysis...</div>', unsafe_allow_html=True)
+            progress.progress(55)
+
+            analysis = analyze_script(client, transcription, platform_url)
+
+            status.markdown('<div class="info-box">🕸️ Building connection map...</div>', unsafe_allow_html=True)
+            progress.progress(85)
+
+            graph_data = build_analysis_graph(analysis, meta)
+            progress.progress(100)
+            status.empty()
+
+            # ── Video metadata banner ─────────────────────────────────────────
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.markdown(f'<div class="score-card"><div class="score-number">{analysis.get("overview",{}).get("overall_score","—")}</div><div class="score-label">Score</div></div>', unsafe_allow_html=True)
+            m2.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.1rem">{meta.get("uploader","—")[:15]}</div><div class="score-label">Creator</div></div>', unsafe_allow_html=True)
+
+            dur = meta.get("duration", 0)
+            dur_str = f"{dur//60}m {dur%60}s" if dur else "—"
+            m3.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{dur_str}</div><div class="score-label">Duration</div></div>', unsafe_allow_html=True)
+
+            views = meta.get("view_count", 0)
+            views_str = f"{views/1000:.0f}K" if views and views < 1000000 else (f"{views/1000000:.1f}M" if views else "—")
+            m4.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{views_str}</div><div class="score-label">Views</div></div>', unsafe_allow_html=True)
+            m5.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.1rem">{analysis.get("retention_prediction",{}).get("virality_potential","—")}</div><div class="score-label">Viral Potential</div></div>', unsafe_allow_html=True)
+
+            st.markdown(f'<div class="section-card"><span style="color:#6b6b8a;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em">Video Title</span><br><strong style="color:#e8e8f0;font-size:1rem">{meta.get("title","—")}</strong></div>', unsafe_allow_html=True)
+
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+            # ── VISUAL CONNECTION MAP ─────────────────────────────────────────
+            st.markdown("### 🕸️ Script Intelligence Map")
+            st.markdown('<p style="color:#6b6b8a;font-size:0.85rem">Every node represents a script dimension. Edge thickness = connection strength. Hover nodes for details.</p>', unsafe_allow_html=True)
+
+            nodes = graph_data["nodes"]
+            edges = graph_data["edges"]
+
+            # Build node lookup
+            node_map = {n["id"]: n for n in nodes}
+
+            fig = go.Figure()
+
+            # Draw edges first (behind nodes)
+            for edge in edges:
+                src = node_map.get(edge["from"])
+                dst = node_map.get(edge["to"])
+                if not src or not dst:
+                    continue
+                weight = edge.get("weight", 0.5)
+                color = edge.get("color", "#2a2a40")
+                # Make color semi-transparent based on weight
+                fig.add_trace(go.Scatter(
+                    x=[src["x"], dst["x"], None],
+                    y=[src["y"], dst["y"], None],
+                    mode="lines",
+                    line=dict(
+                        width=max(0.5, weight * 3.5),
+                        color=color
+                    ),
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
+
+            # Group nodes by type for layered rendering
+            group_order = ["journey", "platform", "strength", "weakness", "hook", "emotion", "structure", "tone", "retention", "center"]
+            rendered = set()
+
+            for group in group_order:
+                group_nodes = [n for n in nodes if n.get("group") == group and n["id"] not in rendered]
+                if not group_nodes:
+                    continue
+
+                xs = [n["x"] for n in group_nodes]
+                ys = [n["y"] for n in group_nodes]
+                sizes = [n["size"] for n in group_nodes]
+                colors = [n["color"] for n in group_nodes]
+                labels = [n["label"] for n in group_nodes]
+                details = [n.get("detail", "") for n in group_nodes]
+
+                hover_texts = [f"<b>{l.replace(chr(10),' · ')}</b><br>{d}" for l, d in zip(labels, details)]
+
+                fig.add_trace(go.Scatter(
+                    x=xs, y=ys,
+                    mode="markers+text",
+                    marker=dict(
+                        size=sizes,
+                        color=colors,
+                        line=dict(color="rgba(255,255,255,0.13)", width=1),
+                        opacity=0.92,
+                    ),
+                    text=[l.split("\n")[0] for l in labels],
+                    textposition="middle center",
+                    textfont=dict(
+                        color=[n.get("text_color", "#ffffff") for n in group_nodes],
+                        size=[max(7, min(10, n["size"] * 0.28)) for n in group_nodes],
+                        family="DM Sans"
+                    ),
+                    hovertext=hover_texts,
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    hoverlabel=dict(
+                        bgcolor="#1a1a2e",
+                        bordercolor="#7c3aed",
+                        font=dict(color="#e8e8f0", size=12, family="DM Sans")
+                    ),
+                    showlegend=False,
+                    name=group
+                ))
+                for n in group_nodes:
+                    rendered.add(n["id"])
+
+            # Subtitles for ring nodes (score below label)
+            ring_ids = ["hook_node", "emotion_node", "structure_node", "tone_node", "retention_node"]
+            ring_nodes = [node_map[rid] for rid in ring_ids if rid in node_map]
+            if ring_nodes:
+                fig.add_trace(go.Scatter(
+                    x=[n["x"] for n in ring_nodes],
+                    y=[n["y"] - 0.35 for n in ring_nodes],
+                    mode="text",
+                    text=[n["label"].split("\n")[1] if "\n" in n["label"] else "" for n in ring_nodes],
+                    textfont=dict(size=9, color="#9090b0", family="DM Sans"),
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
+
+            fig.update_layout(
+                paper_bgcolor="#0a0a0f",
+                plot_bgcolor="#0a0a0f",
+                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-7, 7]),
+                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, range=[-7, 7]),
+                margin=dict(l=0, r=0, t=0, b=0),
+                height=580,
+                dragmode="pan",
+                hoverdistance=20,
+            )
+
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True, "displayModeBar": False})
+
+            # Legend
+            legend_items = [
+                ("#7c3aed", "Video Core"),
+                ("#06b6d4", "Hook"),
+                ("#10b981", "Emotion Arc"),
+                ("#f59e0b", "Structure"),
+                ("#ec4899", "Tone"),
+                ("#8b5cf6", "Retention"),
+                ("#1e3a5f", "Emotion Journey"),
+                ("#374151", "Platform Fit"),
+            ]
+            leg_html = '<div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:-8px;margin-bottom:16px">'
+            for color, label in legend_items:
+                leg_html += f'<span style="display:flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:{color};display:inline-block"></span><span style="color:#6b6b8a;font-size:0.78rem">{label}</span></span>'
+            leg_html += '</div>'
+            st.markdown(leg_html, unsafe_allow_html=True)
+
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+            # ── Detail tabs ────────────────────────────────────────────────────
+            tab1, tab2, tab3, tab4 = st.tabs(["🎣 Hook & Emotion", "🏗️ Structure & Tone", "📜 Transcript", "💡 Action Plan"])
+
+            with tab1:
+                hook = analysis.get("hook", {})
+                emotion = analysis.get("emotional_arc", {})
+
+                h1, h2 = st.columns(2)
+                with h1:
+                    st.markdown(f"""
+<div class="section-card">
+<p style="color:#06b6d4;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em">Hook Analysis</p>
+<p style="color:#e8e8f0;font-style:italic">"{hook.get('text','—')}"</p>
+<div style="margin-top:10px">
+<span class="tag">{hook.get('type','—')}</span>
+<span class="tag">{hook.get('psychological_trigger','—')}</span>
+</div>
+<p style="color:#9090b0;font-size:0.85rem;margin-top:10px">{hook.get('feedback','—')}</p>
+</div>""", unsafe_allow_html=True)
+
+                with h2:
+                    st.markdown(f"""
+<div class="section-card">
+<p style="color:#10b981;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em">Emotional Intelligence</p>
+<p><span class="tag">Dominant: {emotion.get('dominant_emotion','—')}</span></p>
+<p><span class="tag">EQ Rating: {emotion.get('emotional_intelligence_rating','—')}</span></p>
+<p style="color:#9090b0;font-size:0.85rem;margin-top:8px">{emotion.get('feedback','—')}</p>
+</div>""", unsafe_allow_html=True)
+
+                # Emotion arc chart
+                journey = emotion.get("journey", [])
+                if journey:
+                    times = [j.get("timestamp", "") for j in journey]
+                    intensities = [j.get("intensity", 50) for j in journey]
+                    emotions_list = [j.get("emotion", "") for j in journey]
+                    arc_fig = go.Figure()
+                    arc_fig.add_trace(go.Scatter(
+                        x=times, y=intensities,
+                        mode="lines+markers",
+                        line=dict(color="#10b981", width=3, shape="spline"),
+                        marker=dict(size=10, color="#06b6d4"),
+                        text=emotions_list,
+                        hovertemplate="<b>%{x}</b><br>Emotion: %{text}<br>Intensity: %{y}%<extra></extra>",
+                        fill="tozeroy", fillcolor="rgba(16,185,129,0.08)"
+                    ))
+                    arc_fig.update_layout(
+                        paper_bgcolor="#0a0a0f", plot_bgcolor="#12121f",
+                        font=dict(color="#9090b0", family="DM Sans"),
+                        xaxis=dict(gridcolor="#1e1e30", color="#6b6b8a"),
+                        yaxis=dict(range=[0, 100], gridcolor="#1e1e30", color="#6b6b8a"),
+                        margin=dict(l=10, r=10, t=10, b=10), height=200
+                    )
+                    st.plotly_chart(arc_fig, use_container_width=True)
+
+                if hook.get("improved_version"):
+                    st.markdown(f'<div class="info-box">✨ <strong>Improved Hook:</strong> {hook["improved_version"]}</div>', unsafe_allow_html=True)
+
+            with tab2:
+                structure = analysis.get("structure", {})
+                tone = analysis.get("tone_voice", {})
+                s1, s2 = st.columns(2)
+                with s1:
+                    segs = structure.get("segments", [])
+                    if segs:
+                        seg_fig = go.Figure(go.Bar(
+                            x=[s.get("name","") for s in segs],
+                            y=[s.get("effectiveness",0) for s in segs],
+                            marker_color=["#7c3aed","#06b6d4","#10b981"],
+                            text=[f'{s.get("effectiveness",0)}/100' for s in segs],
+                            textposition="outside"
+                        ))
+                        seg_fig.update_layout(
+                            paper_bgcolor="#0a0a0f", plot_bgcolor="#12121f",
+                            font=dict(color="#9090b0"), margin=dict(l=0,r=0,t=0,b=0),
+                            height=200, yaxis=dict(range=[0,110], gridcolor="#1e1e30")
+                        )
+                        st.plotly_chart(seg_fig, use_container_width=True)
+                with s2:
+                    traits = tone.get("personality_traits", [])
+                    st.markdown(f"""
+<div class="section-card">
+<p style="color:#ec4899;font-size:0.75rem;text-transform:uppercase">Tone Profile</p>
+<p><span class="tag">{tone.get('primary_tone','—')}</span> <span class="tag">{tone.get('secondary_tone','—')}</span></p>
+<p style="color:#6b6b8a;margin-top:8px;font-size:0.8rem">Energy: <span style="color:#e8e8f0">{tone.get('energy_level','—')}</span></p>
+<p style="color:#6b6b8a;font-size:0.8rem">Authenticity: <span style="color:#e8e8f0">{tone.get('authenticity_score','—')}/100</span></p>
+<div style="margin-top:8px">{"".join([f'<span class="tag">{t}</span>' for t in traits])}</div>
+</div>""", unsafe_allow_html=True)
+
+            with tab3:
+                if transcription:
+                    st.markdown(f'<div class="script-output">{transcription}</div>', unsafe_allow_html=True)
+                    st.download_button("⬇️ Download Transcript", transcription, file_name="transcript.txt", mime="text/plain")
+                    # Save for chat
+                    st.session_state["chat_transcript"] = transcription
+                    st.session_state["chat_meta"] = meta
+                    st.markdown('<div class="info-box">💬 Go to Script Chat to customize this script with AI.</div>', unsafe_allow_html=True)
+                else:
+                    st.info("No transcript available.")
+
+            with tab4:
+                for item in analysis.get("actionable_improvements", []):
+                    pri = item.get("priority", "Low")
+                    badge = f'<span class="badge-{"high" if pri=="High" else "medium" if pri=="Medium" else "low"}">{pri}</span>'
+                    st.markdown(f'<div class="section-card">{badge} <strong style="color:#e8e8f0">{item.get("area","")}</strong><br><span style="color:#9090b0;font-size:0.9rem">{item.get("suggestion","")}</span></div>', unsafe_allow_html=True)
+
+                if analysis.get("rewritten_hook"):
+                    st.markdown(f'<div class="info-box">🎣 <strong>Rewritten Hook:</strong> {analysis["rewritten_hook"]}</div>', unsafe_allow_html=True)
+
+    elif fetch_btn:
+        st.warning("Please enter a video URL.")
+
+
+# ════════════════════════════════════════════════════════════════════
+# PAGE: SCRIPT CHAT
+# ════════════════════════════════════════════════════════════════════
+elif current_page == "chat":
+    st.markdown("# 💬 Script Chat")
+    st.markdown('<p style="color:#6b6b8a">Chat with AI to customize, improve, or completely reimagine any script. Context-aware and brand-aligned.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+    from modules.brand_rag import query_brand_context, get_document_count
+
+    # ── Session state init ─────────────────────────────────────────────────────
+    if "chat_messages" not in st.session_state:
+        st.session_state["chat_messages"] = []
+
+    if "chat_script_context" not in st.session_state:
+        st.session_state["chat_script_context"] = ""
+
+    # ── Sidebar-style context panel ────────────────────────────────────────────
+    ctx_col, chat_col = st.columns([1, 3])
+
+    with ctx_col:
+        st.markdown("### 📎 Script Context")
+
+        # Import from URL Analyzer
+        if st.session_state.get("chat_transcript"):
+            meta = st.session_state.get("chat_meta", {})
+            st.markdown(f'<div class="info-box">🎬 Loaded from URL Analyzer:<br><strong style="color:#e8e8f0">{meta.get("title","Video")[:40]}</strong></div>', unsafe_allow_html=True)
+            if st.button("Load This Script"):
+                st.session_state["chat_script_context"] = st.session_state["chat_transcript"]
+                st.session_state["chat_messages"] = []
+                st.rerun()
+
+        # Import from Script Generator
+        if st.session_state.get("last_script"):
+            st.markdown(f'<div class="info-box" style="margin-top:8px">✍️ Script from Generator available</div>', unsafe_allow_html=True)
+            if st.button("Load Generated Script"):
+                st.session_state["chat_script_context"] = st.session_state["last_script"]
+                st.session_state["chat_messages"] = []
+                st.rerun()
+
+        st.markdown("")
+        st.markdown("**Or paste a script:**")
+        manual_ctx = st.text_area("Script to work with", value=st.session_state.get("chat_script_context",""), height=180, label_visibility="collapsed")
+        if st.button("Set as Context"):
+            st.session_state["chat_script_context"] = manual_ctx
+            st.session_state["chat_messages"] = []
+            st.rerun()
+
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+        use_brand_chat = st.checkbox("🏷️ Include brand context", value=get_document_count() > 0)
+        platform_chat = st.selectbox("Platform", ["TikTok", "YouTube Shorts", "Instagram Reels", "YouTube Long-form"])
+
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+        st.markdown("**💡 Quick Prompts**")
+        quick_prompts = [
+            "Make the hook more powerful",
+            "Shorten to 30 seconds",
+            "Make it more emotional",
+            "Add a stronger CTA",
+            "Change tone to humorous",
+            "Add pattern interrupts",
+            "Rewrite for my brand",
+            "Make it more conversational",
+            "Increase urgency",
+            "Add social proof",
+        ]
+        for qp in quick_prompts:
+            if st.button(qp, key=f"qp_{qp}"):
+                st.session_state["pending_message"] = qp
+
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        if st.button("🗑️ Clear Chat"):
+            st.session_state["chat_messages"] = []
+            st.rerun()
+
+    with chat_col:
+        # ── Chat history display ───────────────────────────────────────────────
+        chat_container = st.container()
+
+        with chat_container:
+            if not st.session_state["chat_messages"]:
+                ctx_preview = st.session_state.get("chat_script_context","")
+                if ctx_preview:
+                    st.markdown(f'<div class="section-card"><p style="color:#6b6b8a;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em">Active Script Context ({len(ctx_preview.split())} words)</p><p style="color:#9090b0;font-size:0.85rem">{ctx_preview[:300]}{"..." if len(ctx_preview)>300 else ""}</p></div>', unsafe_allow_html=True)
+                st.markdown("""
+<div class="section-card" style="text-align:center;padding:40px 20px">
+<p style="color:#3a3a5a;font-size:2.5rem">💬</p>
+<p style="color:#6b6b8a">Start chatting to customize your script.<br>Use Quick Prompts on the left or type your own request.</p>
+</div>""", unsafe_allow_html=True)
+            else:
+                for msg in st.session_state["chat_messages"]:
+                    role = msg["role"]
+                    content = msg["content"]
+                    if role == "user":
+                        st.markdown(f"""
+<div style="display:flex;justify-content:flex-end;margin:12px 0">
+<div style="background:linear-gradient(135deg,#4c1d95,#1e3a5f);border-radius:16px 16px 4px 16px;padding:12px 18px;max-width:75%;color:#e8e8f0;font-size:0.9rem;line-height:1.5">
+{content}
+</div>
+</div>""", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"""
+<div style="display:flex;justify-content:flex-start;margin:12px 0">
+<div style="background:#12121f;border:1px solid #1e1e30;border-radius:16px 16px 16px 4px;padding:12px 18px;max-width:85%;color:#d0d0e8;font-size:0.9rem;line-height:1.6;white-space:pre-wrap">
+{content}
+</div>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # ── Chat input ─────────────────────────────────────────────────────────
+        user_input = st.chat_input("Ask anything about your script, request changes, or say 'rewrite as 60 seconds'...")
+
+        # Handle quick prompt
+        if "pending_message" in st.session_state:
+            user_input = st.session_state.pop("pending_message")
+
+        if user_input:
+            # Add user message
+            st.session_state["chat_messages"].append({"role": "user", "content": user_input})
+
+            # Build system prompt with context
+            script_ctx = st.session_state.get("chat_script_context", "")
+
+            brand_ctx = ""
+            if use_brand_chat:
+                brand_ctx = query_brand_context(user_input, top_k=4)
+
+            system_content = f"""You are an elite script coach and content strategist specializing in viral {platform_chat} content.
+You have deep expertise in:
+- Emotional intelligence and psychological hooks
+- Platform-native content formats
+- Script optimization and rewriting
+- Viral content patterns and retention strategies
+
+Your responses are:
+- Highly specific and actionable
+- Formatted clearly (use sections/emojis when rewriting full scripts)
+- Psychologically grounded — explain WHY changes work
+- Never generic or vague"""
+
+            if script_ctx:
+                system_content += f"\n\nACTIVE SCRIPT CONTEXT:\n\"\"\"{script_ctx}\"\"\"\n\nWhen the user asks to modify, rewrite, or improve — work from this script."
+
+            if brand_ctx:
+                system_content += f"\n\nBRAND CONTEXT (align all outputs to this):\n{brand_ctx}"
+
+            # Build messages for API
+            api_messages = [{"role": "system", "content": system_content}]
+
+            # Include last 10 messages for context window
+            history = st.session_state["chat_messages"][-10:]
+            for m in history:
+                api_messages.append({"role": m["role"], "content": m["content"]})
+
+            # Stream response
+            with st.spinner(""):
+                response_placeholder = st.empty()
+                full_response = ""
+                stream = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=api_messages,
+                    max_tokens=2000,
+                    temperature=0.75,
+                    stream=True
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        full_response += delta
+                        response_placeholder.markdown(f"""
+<div style="display:flex;justify-content:flex-start;margin:12px 0">
+<div style="background:#12121f;border:1px solid #7c3aed44;border-radius:16px 16px 16px 4px;padding:12px 18px;max-width:85%;color:#d0d0e8;font-size:0.9rem;line-height:1.6;white-space:pre-wrap">
+{full_response}▌
+</div>
+</div>""", unsafe_allow_html=True)
+
+                response_placeholder.empty()
+
+            # Save response
+            st.session_state["chat_messages"].append({"role": "assistant", "content": full_response})
+
+            # Update script context if it's a full rewrite
+            rewrite_signals = ["rewrite", "here's your", "here is your", "━━━", "🎣 hook", "script:"]
+            if any(sig.lower() in full_response.lower() for sig in rewrite_signals):
+                st.session_state["chat_script_context"] = full_response
+                st.session_state["last_script"] = full_response
+
+            st.rerun()
