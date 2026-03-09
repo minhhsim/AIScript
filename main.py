@@ -1493,382 +1493,461 @@ Your responses are:
 # PAGE: CREATOR ANALYZER
 # ════════════════════════════════════════════════════════════════════
 elif current_page == "creator":
-    st.markdown("# 👤 Creator Analyzer")
-    st.markdown('<p style="color:#6b6b8a">Analyze any TikTok, Instagram, or YouTube creator by username — content strategy, engagement patterns, strengths, gaps, and AI-generated video ideas.</p>', unsafe_allow_html=True)
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
     from modules.creator_analyzer import (
         fetch_youtube_creator, fetch_tiktok_creator, fetch_instagram_creator,
-        analyze_creator, compute_video_stats
+        analyze_creator, compute_video_stats, transcribe_top_videos,
+        extract_creator_patterns, fmt_num,
     )
     try:
-        from apikeys import rapidapi_key
+        from apikeys import rapidapi_key, youtube_api_key
     except Exception:
-        rapidapi_key = ""
+        rapidapi_key = ""; youtube_api_key = ""
 
-    # ── Platform tabs ─────────────────────────────────────────────────────────
-    plat_tiktok, plat_ig, plat_yt = st.tabs(["🎵 TikTok", "📸 Instagram", "▶️ YouTube"])
+    st.markdown("# 👤 Creator Analyzer")
+    st.markdown('<p style="color:#6b6b8a">Paste a username → fetch their videos → transcribe top content → extract their exact talking patterns → inject their style into Script Generator.</p>', unsafe_allow_html=True)
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    def render_creator_results(profile, analysis, stats, platform_color):
-        """Shared UI renderer for all platforms."""
-        if profile.get("error") and not profile.get("videos"):
-            st.error(f"❌ {profile['error']}")
-            st.markdown('<div class="info-box">Tips:<br>• Check the username spelling (no @ needed)<br>• For TikTok/Instagram, add a RapidAPI key in apikeys.py<br>• Install instaloader: <code>pip install instaloader</code></div>', unsafe_allow_html=True)
-            return
+    # API key status bar
+    k1, k2, k3 = st.columns(3)
+    k1.markdown(f'<div class="info-box" style="border-color:{"#10b981" if youtube_api_key else "#374151"};text-align:center;padding:8px">{"✅" if youtube_api_key else "⚪"} YouTube API Key</div>', unsafe_allow_html=True)
+    k2.markdown(f'<div class="info-box" style="border-color:{"#10b981" if rapidapi_key else "#374151"};text-align:center;padding:8px">{"✅" if rapidapi_key else "⚪"} RapidAPI Key</div>', unsafe_allow_html=True)
+    k3.markdown(f'<div class="info-box" style="border-color:#10b981;text-align:center;padding:8px">✅ yt-dlp fallback ready</div>', unsafe_allow_html=True)
+    st.markdown("")
 
+    tab_tt, tab_ig, tab_yt = st.tabs(["🎵 TikTok", "📸 Instagram", "▶️ YouTube"])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Shared render function
+    # ─────────────────────────────────────────────────────────────────────────
+    def render_creator(profile, analysis, stats, transcribed, patterns, color, pkey):
+        videos   = profile.get("videos", [])
+        username = profile.get("username", "")
+        platform = profile.get("platform", "")
+
+        # Always show debug info so user knows what happened
+        debug = profile.get("debug", [])
         method = profile.get("method", "")
         if method:
-            st.markdown(f'<div class="info-box" style="margin-bottom:12px">📡 Data fetched via: <strong>{method}</strong></div>', unsafe_allow_html=True)
+            status_color = "#10b981" if videos else "#ef4444"
+            st.markdown(f'<div class="info-box" style="border-color:{status_color}">📡 <strong>{method}</strong> · {len(videos)} videos fetched</div>', unsafe_allow_html=True)
+        if debug:
+            with st.expander("🔍 Debug info", expanded=(not videos)):
+                for d in debug:
+                    st.markdown(f'<span style="color:#6b6b8a;font-size:0.8rem">• {d}</span>', unsafe_allow_html=True)
 
-        # ── Profile header ────────────────────────────────────────────────────
-        followers  = profile.get("followers", 0)
-        following  = profile.get("following", 0)
-        bio        = profile.get("bio", "")
-        total_vids = profile.get("total_videos", 0)
-        score      = analysis.get("overall_score", 0)
-        tier       = analysis.get("tier", "—")
-        archetype  = analysis.get("creator_archetype", "—")
-        mono_rate  = analysis.get("monetization_potential", "—")
+        if profile.get("error") and not videos:
+            st.error(f"❌ {profile['error']}")
+            if pkey == "tiktok":
+                st.markdown('<div class="info-box">For TikTok: add RapidAPI key to apikeys.py (rapidapi_key). Get one at rapidapi.com → search "tokapi"</div>', unsafe_allow_html=True)
+            elif pkey == "instagram":
+                st.markdown('<div class="info-box">For Instagram: add RapidAPI key OR run <code>pip install instaloader</code></div>', unsafe_allow_html=True)
+            elif pkey == "youtube":
+                st.markdown('<div class="info-box">For YouTube: add YouTube Data API key (youtube_api_key) from console.cloud.google.com — free, 10k calls/day</div>', unsafe_allow_html=True)
+            return
 
-        # Format follower count
-        def fmt_num(n):
-            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-            if n >= 1_000:     return f"{n/1_000:.0f}K"
-            return str(n)
+        followers = profile.get("followers", 0) or profile.get("subscribers", 0)
+        following = profile.get("following", 0)
+        bio       = profile.get("bio", "")
+        score     = analysis.get("overall_score", 0) if analysis else 0
+        tier      = analysis.get("tier", "—") if analysis else "—"
+        archetype = analysis.get("creator_archetype", "—") if analysis else "—"
+        mono      = analysis.get("monetization_potential", "—") if analysis else "—"
 
+        # ── Profile card ──────────────────────────────────────────────────────
+        icon = "🎵" if platform == "TikTok" else "📸" if platform == "Instagram" else "▶️"
         st.markdown(f"""
-<div style="background:linear-gradient(135deg,{platform_color}15,#0a0a0f);border:1px solid {platform_color}33;border-radius:16px;padding:24px;margin-bottom:20px">
-  <div style="display:flex;align-items:flex-start;gap:20px;flex-wrap:wrap">
-    <div style="background:{platform_color}22;border:2px solid {platform_color}44;border-radius:50%;width:64px;height:64px;display:flex;align-items:center;justify-content:center;font-size:1.8rem;flex-shrink:0">
-      {"🎵" if profile["platform"]=="TikTok" else "📸" if profile["platform"]=="Instagram" else "▶️"}
-    </div>
-    <div style="flex:1">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">
-        <span style="color:#e8e8f0;font-family:Syne;font-weight:700;font-size:1.2rem">@{profile.get("username","")}</span>
-        <span style="color:{platform_color};font-size:0.9rem">{profile.get("display_name","")}</span>
-        <span class="tag" style="border-color:{platform_color}44;color:{platform_color}">{tier}</span>
+<div style="background:linear-gradient(135deg,{color}15,#0a0a0f);border:1px solid {color}33;border-radius:16px;padding:22px;margin-bottom:18px">
+  <div style="display:flex;align-items:flex-start;gap:18px;flex-wrap:wrap">
+    <div style="background:{color}22;border:2px solid {color}55;border-radius:50%;width:60px;height:60px;display:flex;align-items:center;justify-content:center;font-size:1.7rem;flex-shrink:0">{icon}</div>
+    <div style="flex:1;min-width:200px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <span style="color:#e8e8f0;font-family:Syne;font-weight:700;font-size:1.15rem">@{username}</span>
+        <span style="color:{color};font-size:0.9rem">{profile.get("display_name","")}</span>
+        <span class="tag" style="border-color:{color}44;color:{color}">{tier}</span>
         <span class="tag">{archetype}</span>
       </div>
-      <p style="color:#9090b0;font-size:0.85rem;margin:0 0 12px 0">{bio[:200] if bio else "No bio available"}</p>
-      <div style="display:flex;gap:20px;flex-wrap:wrap">
-        <div><span style="color:{platform_color};font-family:Syne;font-weight:700;font-size:1.1rem">{fmt_num(followers)}</span><span style="color:#6b6b8a;font-size:0.78rem;margin-left:4px">followers</span></div>
-        {"<div><span style='color:#e8e8f0;font-family:Syne;font-weight:700;font-size:1.1rem'>" + fmt_num(following) + "</span><span style='color:#6b6b8a;font-size:0.78rem;margin-left:4px'>following</span></div>" if following else ""}
-        <div><span style="color:#e8e8f0;font-family:Syne;font-weight:700;font-size:1.1rem">{total_vids}</span><span style="color:#6b6b8a;font-size:0.78rem;margin-left:4px">videos fetched</span></div>
+      <p style="color:#9090b0;font-size:0.84rem;margin:0 0 10px 0;line-height:1.5">{bio[:200] if bio else "No bio available"}</p>
+      <div style="display:flex;gap:18px;flex-wrap:wrap">
+        <span><strong style="color:{color};font-size:1.05rem">{fmt_num(followers) if followers else "—"}</strong><span style="color:#6b6b8a;font-size:0.78rem;margin-left:4px">followers</span></span>
+        {"<span><strong style='color:#d0d0e8;font-size:1.05rem'>" + fmt_num(following) + "</strong><span style='color:#6b6b8a;font-size:0.78rem;margin-left:4px'>following</span></span>" if following else ""}
+        <span><strong style="color:#d0d0e8;font-size:1.05rem">{len(videos)}</strong><span style="color:#6b6b8a;font-size:0.78rem;margin-left:4px">videos fetched</span></span>
       </div>
     </div>
-    <div style="text-align:right">
-      <div style="font-size:2.2rem;font-family:Syne;font-weight:700;color:{platform_color}">{score}</div>
-      <div style="color:#6b6b8a;font-size:0.75rem">Creator Score</div>
-      <div style="margin-top:8px"><span class="tag" style="border-color:{'#10b981' if mono_rate in ['High','Very High'] else '#f59e0b'}44;color:{'#10b981' if mono_rate in ['High','Very High'] else '#f59e0b'}">💰 {mono_rate} Monetization</span></div>
+    <div style="text-align:right;flex-shrink:0">
+      <div style="font-size:2rem;font-family:Syne;font-weight:700;color:{color}">{score}</div>
+      <div style="color:#6b6b8a;font-size:0.7rem;margin-bottom:6px">Creator Score</div>
+      <span class="tag" style="color:{'#10b981' if mono in ['High','Very High'] else '#f59e0b'}">💰 {mono}</span>
     </div>
   </div>
 </div>""", unsafe_allow_html=True)
 
-        # ── Summary ───────────────────────────────────────────────────────────
-        if analysis.get("summary"):
-            st.markdown(f'<div class="section-card"><p style="color:#6b6b8a;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em">Executive Summary</p><p style="color:#d0d0e8;font-size:0.9rem;line-height:1.6">{analysis["summary"]}</p></div>', unsafe_allow_html=True)
+        if analysis and analysis.get("summary"):
+            st.markdown(f'<div class="section-card"><p style="color:#6b6b8a;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em">Executive Summary</p><p style="color:#d0d0e8;font-size:0.9rem;line-height:1.6;margin:0">{analysis["summary"]}</p></div>', unsafe_allow_html=True)
+
+        # Stats bar
+        if stats:
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.2rem">{fmt_num(stats.get("avg_views",0))}</div><div class="score-label">Avg Views</div></div>', unsafe_allow_html=True)
+            c2.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.2rem">{fmt_num(stats.get("avg_likes",0))}</div><div class="score-label">Avg Likes</div></div>', unsafe_allow_html=True)
+            c3.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.2rem">{stats.get("engagement_rate",0):.1f}%</div><div class="score-label">Eng Rate</div></div>', unsafe_allow_html=True)
+            c4.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.2rem">{fmt_num(stats.get("total_views",0))}</div><div class="score-label">Total Views</div></div>', unsafe_allow_html=True)
+            c5.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.2rem">{stats.get("avg_duration",0)}s</div><div class="score-label">Avg Duration</div></div>', unsafe_allow_html=True)
+            st.markdown("")
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-        # ── Stats row ─────────────────────────────────────────────────────────
-        if stats:
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{fmt_num(stats.get("avg_views",0))}</div><div class="score-label">Avg Views</div></div>', unsafe_allow_html=True)
-            c2.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{fmt_num(stats.get("avg_likes",0))}</div><div class="score-label">Avg Likes</div></div>', unsafe_allow_html=True)
-            c3.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{stats.get("engagement_rate",0):.1f}%</div><div class="score-label">Eng. Rate</div></div>', unsafe_allow_html=True)
-            c4.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{fmt_num(stats.get("total_views",0))}</div><div class="score-label">Total Views</div></div>', unsafe_allow_html=True)
-            c5.markdown(f'<div class="score-card"><div class="score-number" style="font-size:1.3rem">{stats.get("avg_duration",0)}s</div><div class="score-label">Avg Duration</div></div>', unsafe_allow_html=True)
-            st.markdown("")
+        # ── Tabs ──────────────────────────────────────────────────────────────
+        tv, tp, ts, ti = st.tabs(["📋 Videos", "🎤 Talking Patterns", "🧠 Strategy", "💡 Video Ideas"])
 
-        # ── Main analysis tabs ────────────────────────────────────────────────
-        t_strategy, t_content, t_ideas, t_videos = st.tabs([
-            "🧠 Strategy", "📊 Content Analysis", "💡 Video Ideas", "📋 Video List"
-        ])
-
-        with t_strategy:
-            col_left, col_right = st.columns(2)
-
-            with col_left:
-                # Content pillars
-                pillars = analysis.get("content_pillars", [])
-                if pillars:
-                    st.markdown("**🏛️ Content Pillars**")
-                    for p in pillars:
-                        st.markdown(f'<div class="strength-item"><span style="color:{platform_color}">◆</span> {p}</div>', unsafe_allow_html=True)
-                    st.markdown("")
-
-                # Strengths
-                st.markdown("**✅ Strengths**")
-                for s in analysis.get("strengths", []):
-                    st.markdown(f'<div class="strength-item"><span style="color:#10b981">▲</span> {s}</div>', unsafe_allow_html=True)
-                st.markdown("")
-
-                # Growth opportunities
-                st.markdown("**🚀 Growth Opportunities**")
-                for o in analysis.get("growth_opportunities", []):
-                    st.markdown(f'<div class="strength-item"><span style="color:#06b6d4">→</span> {o}</div>', unsafe_allow_html=True)
-
-            with col_right:
-                # Weaknesses
-                st.markdown("**❌ Weaknesses**")
-                for w in analysis.get("weaknesses", []):
-                    st.markdown(f'<div class="strength-item"><span style="color:#ef4444">▼</span> {w}</div>', unsafe_allow_html=True)
-                st.markdown("")
-
-                # Content gaps
-                st.markdown("**🕳️ Content Gaps**")
-                for g in analysis.get("content_gaps", []):
-                    st.markdown(f'<div class="strength-item"><span style="color:#f59e0b">!</span> {g}</div>', unsafe_allow_html=True)
-                st.markdown("")
-
-                # Profile info cards
-                info_items = [
-                    ("🎤 Tone",        analysis.get("tone", "—")),
-                    ("📢 Style",       analysis.get("posting_style", "—")),
-                    ("👥 Audience",    analysis.get("audience_profile", "—")),
-                    ("🎣 Hook Patterns", analysis.get("hook_patterns", "—")),
-                    ("🤝 Collab Fit",  analysis.get("collaboration_fit", "—")),
-                ]
-                for label, val in info_items:
-                    st.markdown(f'<div class="section-card" style="padding:10px 14px;margin-bottom:8px"><span style="color:#6b6b8a;font-size:0.72rem;text-transform:uppercase">{label}</span><br><span style="color:#d0d0e8;font-size:0.85rem">{val}</span></div>', unsafe_allow_html=True)
-
-        with t_content:
-            # Top performing themes
-            themes = analysis.get("top_performing_themes", [])
-            viral  = analysis.get("viral_formula", "")
-
-            if viral:
-                st.markdown(f'<div class="info-box">🔥 <strong>Viral Formula:</strong> {viral}</div>', unsafe_allow_html=True)
-
-            if themes:
-                st.markdown("**📈 Top Performing Themes**")
-                for i, t in enumerate(themes):
-                    pct = max(30, 100 - i * 15)
-                    st.markdown(f"""
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
-  <span style="color:#6b6b8a;font-size:0.8rem;min-width:20px">#{i+1}</span>
-  <div style="flex:1;background:#1a1a2e;border-radius:6px;height:28px;overflow:hidden">
-    <div style="background:linear-gradient(90deg,{platform_color},{platform_color}88);width:{pct}%;height:100%;display:flex;align-items:center;padding-left:10px">
-      <span style="color:#fff;font-size:0.82rem;font-weight:500">{t}</span>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-            st.markdown("")
-
-            # Top 5 videos
-            top_vids = stats.get("top_videos", []) if stats else []
-            if top_vids:
-                st.markdown("**🏆 Top Performing Videos**")
-                for i, v in enumerate(top_vids):
-                    title    = v.get("title", "")[:90] or "[No title]"
-                    views    = v.get("views", 0)
-                    likes    = v.get("likes", 0)
-                    comments = v.get("comments", 0)
-                    vtype    = v.get("type", "")
-
-                    st.markdown(f"""
-<div class="section-card" style="margin-bottom:8px;padding:12px 16px">
-  <div style="display:flex;align-items:center;gap:10px">
-    <span style="color:{platform_color};font-family:Syne;font-weight:700;font-size:1rem;min-width:24px">#{i+1}</span>
-    <div style="flex:1">
-      <p style="color:#d0d0e8;font-size:0.88rem;margin:0 0 4px 0">{title}</p>
-      <div style="display:flex;gap:12px">
-        {"<span style='color:#6b6b8a;font-size:0.78rem'>👁️ " + (str(views//1000)+"K" if views>=1000 else str(views)) + "</span>" if views else ""}
-        {"<span style='color:#6b6b8a;font-size:0.78rem'>❤️ " + (str(likes//1000)+"K" if likes>=1000 else str(likes)) + "</span>" if likes else ""}
-        {"<span style='color:#6b6b8a;font-size:0.78rem'>💬 " + str(comments) + "</span>" if comments else ""}
-        {"<span class='tag' style='font-size:0.68rem'>" + vtype + "</span>" if vtype else ""}
-      </div>
-    </div>
-  </div>
-</div>""", unsafe_allow_html=True)
-
-            # Views distribution chart
-            videos_with_views = [(v.get("title","")[:30] or f"Video {i+1}", v.get("views",0))
-                                 for i, v in enumerate(profile.get("videos",[])[:15])
-                                 if v.get("views", 0) > 0]
-            if len(videos_with_views) >= 3:
-                import plotly.graph_objects as go_local
-                bar = go_local.Figure(go_local.Bar(
-                    x=[v[0] for v in videos_with_views],
-                    y=[v[1] for v in videos_with_views],
-                    marker=dict(
-                        color=[v[1] for v in videos_with_views],
-                        colorscale=[[0, "#1e1e30"], [1, platform_color]],
-                        showscale=False
-                    ),
-                    hovertemplate="<b>%{x}</b><br>Views: %{y:,}<extra></extra>"
-                ))
-                bar.update_layout(
-                    paper_bgcolor="#0a0a0f", plot_bgcolor="#12121f",
-                    font=dict(color="#6b6b8a", size=10),
-                    xaxis=dict(tickangle=-35, gridcolor="#1e1e30"),
-                    yaxis=dict(gridcolor="#1e1e30"),
-                    margin=dict(l=0, r=0, t=10, b=60), height=220
-                )
-                st.plotly_chart(bar, use_container_width=True)
-
-        with t_ideas:
-            st.markdown("### 💡 AI-Generated Video Ideas")
-            st.markdown(f'<p style="color:#6b6b8a;font-size:0.85rem">Tailored to @{profile.get("username","")}\'s style, audience, and content gaps.</p>', unsafe_allow_html=True)
-
-            ideas = analysis.get("next_3_video_ideas", [])
-            idea_colors = [platform_color, "#06b6d4", "#10b981"]
-
-            for i, idea in enumerate(ideas):
-                color = idea_colors[i % len(idea_colors)]
-                st.markdown(f"""
-<div style="background:#0f0f1a;border:1px solid #1e1e30;border-left:4px solid {color};border-radius:12px;padding:20px;margin-bottom:14px">
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-    <span style="background:{color}22;border:1px solid {color}44;border-radius:50%;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-family:Syne;font-weight:700;color:{color};font-size:0.85rem;flex-shrink:0">{i+1}</span>
-    <strong style="color:#e8e8f0;font-size:0.95rem">{idea.get("title","")}</strong>
-  </div>
-  <div style="background:{color}11;border-radius:8px;padding:10px 14px;margin-bottom:10px;border-left:2px solid {color}44">
-    <span style="color:#6b6b8a;font-size:0.72rem;text-transform:uppercase">Hook</span>
-    <p style="color:{color};font-size:0.88rem;margin:3px 0 0 0;font-style:italic">"{idea.get("hook","")}"</p>
-  </div>
-  <p style="color:#9090b0;font-size:0.85rem;margin:0">{idea.get("why","")}</p>
-</div>""", unsafe_allow_html=True)
-
-            # Copy ideas to script generator
-            if ideas and st.button("✍️ Generate Script from Idea #1", key=f"gen_idea_{profile['platform']}"):
-                idea_prompt = f"Write a {profile['platform']} script based on this idea: {ideas[0].get('title','')}. Hook: {ideas[0].get('hook','')}"
-                st.session_state["pending_script_topic"] = idea_prompt
-                st.markdown('<div class="info-box">✅ Idea loaded — go to Script Generator and click Generate.</div>', unsafe_allow_html=True)
-
-        with t_videos:
-            videos = profile.get("videos", [])
+        # ── VIDEOS TAB ────────────────────────────────────────────────────────
+        with tv:
             if not videos:
-                st.info("No video data available.")
+                st.info("No videos to display.")
             else:
-                st.markdown(f"**{len(videos)} videos fetched**")
-                for i, v in enumerate(videos):
-                    title    = v.get("title", "")[:100] or "[No title/caption]"
-                    views    = v.get("views", 0)
-                    likes    = v.get("likes", 0)
-                    comments = v.get("comments", 0)
-                    dur      = v.get("duration", 0)
-                    date     = v.get("upload_date", "")
+                # Bar chart of views
+                chart_data = [(v.get("title","")[:28] or f"#{i+1}", v.get("views",0))
+                              for i,v in enumerate(videos[:15]) if v.get("views",0) > 0]
+                if len(chart_data) >= 3:
+                    fig_bar = go.Figure(go.Bar(
+                        x=[d[0] for d in chart_data],
+                        y=[d[1] for d in chart_data],
+                        marker=dict(
+                            color=[d[1] for d in chart_data],
+                            colorscale=[[0,"#1a1a2e"],[1,color]],
+                            showscale=False
+                        ),
+                        hovertemplate="<b>%{x}</b><br>%{y:,} views<extra></extra>"
+                    ))
+                    fig_bar.update_layout(
+                        paper_bgcolor="#0a0a0f", plot_bgcolor="#12121f",
+                        font=dict(color="#6b6b8a", size=9), height=180,
+                        xaxis=dict(tickangle=-40, gridcolor="#1a1a2e"),
+                        yaxis=dict(gridcolor="#1a1a2e"),
+                        margin=dict(l=0,r=0,t=6,b=60)
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+                elif not chart_data:
+                    st.markdown('<div class="info-box" style="border-color:#374151">Views data not available for this platform/method — video titles still shown below.</div>', unsafe_allow_html=True)
 
-                    stats_parts = []
-                    if views:    stats_parts.append(f"👁️ {views:,}")
-                    if likes:    stats_parts.append(f"❤️ {likes:,}")
-                    if comments: stats_parts.append(f"💬 {comments:,}")
-                    if dur:      stats_parts.append(f"⏱️ {dur}s")
-                    if date:     stats_parts.append(f"📅 {date}")
+                # Full list
+                st.markdown(f"**{len(videos)} videos**")
+                for i, v in enumerate(videos):
+                    title    = (v.get("title") or "[No caption]")[:100]
+                    url      = v.get("url","")
+                    views    = v.get("views",0)
+                    likes    = v.get("likes",0)
+                    comments = v.get("comments",0)
+                    dur      = v.get("duration",0)
+                    date     = str(v.get("upload_date",""))[:10]
+                    vtype    = v.get("type","")
+
+                    meta_parts = []
+                    if views:    meta_parts.append(f"👁️ {views:,}")
+                    if likes:    meta_parts.append(f"❤️ {likes:,}")
+                    if comments: meta_parts.append(f"💬 {comments:,}")
+                    if dur:      meta_parts.append(f"⏱️ {dur}s")
+                    if date:     meta_parts.append(f"📅 {date}")
+                    meta_str = " · ".join(meta_parts) if meta_parts else "No stats (limited API access)"
+
+                    link = f'<a href="{url}" target="_blank" style="color:{color};font-size:0.75rem;text-decoration:none;flex-shrink:0">↗</a>' if url else ""
+                    type_badge = f'<span class="tag" style="font-size:0.68rem;flex-shrink:0">{vtype}</span>' if vtype else ""
 
                     st.markdown(f"""
-<div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #1a1a2e">
-  <span style="color:{platform_color};font-family:Syne;font-size:0.8rem;min-width:24px">#{i+1}</span>
-  <div style="flex:1">
-    <p style="color:#d0d0e8;font-size:0.85rem;margin:0 0 3px 0">{title}</p>
-    <p style="color:#6b6b8a;font-size:0.75rem;margin:0">{" · ".join(stats_parts) if stats_parts else "No stats available"}</p>
+<div style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid #14141f">
+  <span style="color:{color};font-family:Syne;font-size:0.75rem;min-width:22px;padding-top:3px;flex-shrink:0">#{i+1}</span>
+  <div style="flex:1;min-width:0">
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <p style="color:#d0d0e8;font-size:0.87rem;margin:0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{title}</p>
+      {type_badge}{link}
+    </div>
+    <p style="color:#6b6b8a;font-size:0.74rem;margin:2px 0 0 0">{meta_str}</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
-    # ── TikTok tab ────────────────────────────────────────────────────────────
-    with plat_tiktok:
+        # ── PATTERNS TAB ─────────────────────────────────────────────────────
+        with tp:
+            if not patterns:
+                st.markdown(f"""
+<div class="section-card" style="text-align:center;padding:36px">
+  <p style="font-size:2rem;margin:0 0 10px 0">🎤</p>
+  <p style="color:#6b6b8a;margin:0">Use the <strong style="color:{color}">+ Extract Patterns</strong> button to transcribe this creator's top 3 videos and extract their exact talking style.</p>
+  <p style="color:#4a4a6a;font-size:0.8rem;margin-top:8px">Takes ~2 min · Requires yt-dlp and the video to be downloadable</p>
+</div>""", unsafe_allow_html=True)
+            elif patterns.get("error"):
+                st.warning(f"Pattern extraction failed: {patterns['error']}")
+            else:
+                # Style fingerprint
+                if patterns.get("style_summary"):
+                    st.markdown(f'<div class="section-card"><p style="color:{color};font-size:0.7rem;text-transform:uppercase;font-weight:700;letter-spacing:0.1em">🎤 Style Fingerprint of @{username}</p><p style="color:#d0d0e8;font-size:0.95rem;line-height:1.6;margin:0">{patterns["style_summary"]}</p></div>', unsafe_allow_html=True)
+
+                # Voice characteristics row
+                chars = [
+                    ("Addresses as",     patterns.get("audience_address","—")),
+                    ("Energy",           patterns.get("energy_level","—")),
+                    ("Speaking pace",    patterns.get("speaking_pace","—")),
+                    ("Sentence length",  patterns.get("sentence_length","—")),
+                    ("Vocabulary",       patterns.get("vocabulary_style","—")),
+                    ("Format",           patterns.get("content_format","—")),
+                    ("Humor",            patterns.get("humor_style","—")),
+                ]
+                cc1,cc2,cc3 = st.columns(3)
+                cols = [cc1,cc2,cc3]
+                for i,(lbl,val) in enumerate(chars):
+                    cols[i%3].markdown(f'<div class="section-card" style="padding:9px 12px;margin-bottom:8px"><span style="color:#6b6b8a;font-size:0.67rem;text-transform:uppercase">{lbl}</span><br><span style="color:{color};font-weight:600;font-size:0.88rem">{val}</span></div>', unsafe_allow_html=True)
+
+                st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+                # Pattern columns
+                pc1, pc2 = st.columns(2)
+                left_patterns = [
+                    ("🎣 Hook Formulas",     patterns.get("hook_formulas",[])),
+                    ("🎬 Opening Patterns",  patterns.get("opening_patterns",[])),
+                    ("🔀 Transitions",       patterns.get("transition_phrases",[])),
+                    ("✍️ Signature Phrases", patterns.get("signature_phrases",[])),
+                ]
+                right_patterns = [
+                    ("🔚 Closing / CTA",     patterns.get("closing_patterns",[])),
+                    ("😂 Humor",             [patterns.get("humor_style","")]),
+                    ("💥 Emotional Triggers",patterns.get("emotional_triggers",[])),
+                    ("📖 Story Structure",   [patterns.get("storytelling_structure","")]),
+                    ("⏱️ Pacing Technique",  [patterns.get("pacing_technique","")]),
+                ]
+                for lbl, items in left_patterns:
+                    if items and any(str(x).strip() for x in items):
+                        pc1.markdown(f"**{lbl}**")
+                        for item in items:
+                            if str(item).strip():
+                                pc1.markdown(f'<div class="strength-item"><span style="color:{color}">◆</span> {item}</div>', unsafe_allow_html=True)
+                        pc1.markdown("")
+                for lbl, items in right_patterns:
+                    if items and any(str(x).strip() for x in items):
+                        pc2.markdown(f"**{lbl}**")
+                        for item in items:
+                            if str(item).strip():
+                                pc2.markdown(f'<div class="strength-item"><span style="color:{color}">◆</span> {item}</div>', unsafe_allow_html=True)
+                        pc2.markdown("")
+
+                # Inject to script generator
+                inject = patterns.get("script_injection_prompt","")
+                if inject:
+                    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                    st.markdown("**🤖 Script Style Injection**")
+                    st.markdown(f'<div class="section-card"><p style="color:#6b6b8a;font-size:0.7rem;text-transform:uppercase;margin-bottom:6px">Use this in Script Generator to write like @{username}</p><p style="color:#d0d0e8;font-size:0.88rem;line-height:1.7;font-style:italic;margin:0">{inject}</p></div>', unsafe_allow_html=True)
+
+                    if st.button(f"💉 Inject @{username} Style → Script Generator", key=f"inject_btn_{pkey}"):
+                        st.session_state["creator_style_prompt"] = inject
+                        st.session_state["creator_style_name"]   = f"@{username} ({platform})"
+                        st.markdown(f'<div class="info-box" style="border-color:#10b981">✅ Style injected! Go to ✍️ Script Generator — their style will be applied automatically.</div>', unsafe_allow_html=True)
+
+                # Show transcripts
+                if transcribed:
+                    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                    st.markdown(f"**📜 Transcribed Videos ({len(transcribed)})**")
+                    for i, tv_item in enumerate(transcribed):
+                        t = tv_item.get("transcript","").strip()
+                        label = f"Video {i+1}: {tv_item.get('title','')[:55]} · {fmt_num(tv_item.get('views',0))} views"
+                        with st.expander(label, expanded=False):
+                            if t and not t.startswith("[Transcription failed"):
+                                st.markdown(f'<div class="script-output" style="font-size:0.84rem;max-height:300px;overflow-y:auto">{t}</div>', unsafe_allow_html=True)
+                            else:
+                                st.markdown(f'<span style="color:#ef4444">{t or "No transcript"}</span>', unsafe_allow_html=True)
+
+        # ── STRATEGY TAB ─────────────────────────────────────────────────────
+        with ts:
+            if not analysis or analysis.get("error"):
+                st.info("No analysis available.")
+            else:
+                if analysis.get("viral_formula"):
+                    st.markdown(f'<div class="info-box">🔥 <strong>Viral Formula:</strong> {analysis["viral_formula"]}</div>', unsafe_allow_html=True)
+
+                sl, sr = st.columns(2)
+                with sl:
+                    if analysis.get("content_pillars"):
+                        st.markdown("**🏛️ Content Pillars**")
+                        for p in analysis["content_pillars"]:
+                            st.markdown(f'<div class="strength-item"><span style="color:{color}">◆</span> {p}</div>', unsafe_allow_html=True)
+                        st.markdown("")
+                    st.markdown("**✅ Strengths**")
+                    for s in analysis.get("strengths",[]):
+                        st.markdown(f'<div class="strength-item"><span style="color:#10b981">▲</span> {s}</div>', unsafe_allow_html=True)
+                    st.markdown("")
+                    st.markdown("**🚀 Growth Opportunities**")
+                    for o in analysis.get("growth_opportunities",[]):
+                        st.markdown(f'<div class="strength-item"><span style="color:#06b6d4">→</span> {o}</div>', unsafe_allow_html=True)
+                with sr:
+                    st.markdown("**❌ Weaknesses**")
+                    for w in analysis.get("weaknesses",[]):
+                        st.markdown(f'<div class="strength-item"><span style="color:#ef4444">▼</span> {w}</div>', unsafe_allow_html=True)
+                    st.markdown("")
+                    st.markdown("**🕳️ Content Gaps**")
+                    for g in analysis.get("content_gaps",[]):
+                        st.markdown(f'<div class="strength-item"><span style="color:#f59e0b">!</span> {g}</div>', unsafe_allow_html=True)
+                    st.markdown("")
+                    for lbl,val in [("👥 Audience",     analysis.get("audience_profile","—")),
+                                    ("🎤 Tone",         analysis.get("tone","—")),
+                                    ("🤝 Collab Fit",   analysis.get("collaboration_fit","—")),
+                                    ("🎣 Hook Patterns",analysis.get("hook_patterns","—"))]:
+                        st.markdown(f'<div class="section-card" style="padding:9px 12px;margin-bottom:7px"><span style="color:#6b6b8a;font-size:0.68rem;text-transform:uppercase">{lbl}</span><br><span style="color:#d0d0e8;font-size:0.84rem">{val}</span></div>', unsafe_allow_html=True)
+
+                # Top videos by engagement
+                top = stats.get("top_videos",[]) if stats else []
+                if top:
+                    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                    st.markdown("**🏆 Top 5 Videos by Views**")
+                    for i,v in enumerate(top):
+                        url_link = f'<a href="{v["url"]}" target="_blank" style="color:{color};font-size:0.75rem">↗</a>' if v.get("url") else ""
+                        st.markdown(f"""
+<div class="section-card" style="padding:10px 14px;margin-bottom:7px">
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="color:{color};font-family:Syne;font-weight:700;font-size:0.9rem;min-width:20px">#{i+1}</span>
+    <div style="flex:1">
+      <p style="color:#d0d0e8;font-size:0.86rem;margin:0 0 3px 0">{(v.get("title") or "[No title]")[:85]} {url_link}</p>
+      <p style="color:#6b6b8a;font-size:0.75rem;margin:0">👁️{fmt_num(v.get("views",0))} · ❤️{fmt_num(v.get("likes",0))} · 💬{v.get("comments",0)}</p>
+    </div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
+        # ── IDEAS TAB ─────────────────────────────────────────────────────────
+        with ti:
+            if not analysis or not analysis.get("next_3_video_ideas"):
+                st.info("No ideas generated.")
+            else:
+                st.markdown(f"### 💡 3 Video Ideas for @{username}")
+                idea_colors = [color, "#06b6d4", "#10b981"]
+                for i, idea in enumerate(analysis["next_3_video_ideas"]):
+                    c = idea_colors[i % 3]
+                    st.markdown(f"""
+<div style="background:#0d0d1a;border:1px solid #1e1e30;border-left:4px solid {c};border-radius:12px;padding:18px;margin-bottom:12px">
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+    <span style="background:{c}22;border:1px solid {c}44;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;color:{c};font-weight:700;font-size:0.82rem;flex-shrink:0">{i+1}</span>
+    <strong style="color:#e8e8f0;font-size:0.92rem">{idea.get("title","")}</strong>
+  </div>
+  <div style="background:{c}0f;border-left:2px solid {c}55;border-radius:0 6px 6px 0;padding:8px 12px;margin-bottom:8px">
+    <span style="color:#6b6b8a;font-size:0.67rem;text-transform:uppercase">Hook</span>
+    <p style="color:{c};font-size:0.86rem;margin:2px 0 0 0;font-style:italic">"{idea.get("hook","")}"</p>
+  </div>
+  <p style="color:#9090b0;font-size:0.84rem;margin:0;line-height:1.5">{idea.get("why","")}</p>
+</div>""", unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TikTok tab
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_tt:
         st.markdown("### 🎵 TikTok Creator")
-        col_in, col_btn = st.columns([3, 1])
-        with col_in:
-            tt_username = st.text_input("TikTok username", placeholder="e.g. charlidamelio or @charlidamelio",
-                                         label_visibility="collapsed", key="tt_username")
-        with col_btn:
-            tt_btn = st.button("⚡ Analyze", key="tt_analyze_btn")
-
         if not rapidapi_key:
-            st.markdown('<div class="info-box" style="border-color:#f59e0b">⚠️ No RapidAPI key — will try yt-dlp fallback. Add key to apikeys.py for better TikTok data.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="info-box" style="border-color:#f59e0b">⚠️ No RapidAPI key — will use yt-dlp fallback (limited stats). For full data add <code>rapidapi_key</code> to apikeys.py</div>', unsafe_allow_html=True)
 
-        if tt_btn and tt_username.strip():
-            progress = st.progress(0)
-            status   = st.empty()
+        ci1, ci2, ci3 = st.columns([3,1,1])
+        with ci1:
+            tt_user = st.text_input("TikTok username", placeholder="e.g. charlidamelio",
+                                    label_visibility="collapsed", key="tt_username_input")
+        with ci2:
+            tt_fetch = st.button("⚡ Fetch", key="tt_fetch_btn", use_container_width=True)
+        with ci3:
+            tt_pat   = st.button("🎤 + Patterns", key="tt_pat_btn", use_container_width=True,
+                                 help="Also transcribes top 3 videos (~2 min)")
 
-            status.markdown('<div class="info-box">📡 Fetching TikTok profile...</div>', unsafe_allow_html=True)
-            progress.progress(20)
-
-            profile = fetch_tiktok_creator(tt_username.strip(), rapidapi_key, max_videos=15)
-            progress.progress(50)
-
-            stats    = compute_video_stats(profile.get("videos", []))
-            status.markdown('<div class="info-box">🧠 Running AI analysis...</div>', unsafe_allow_html=True)
-            progress.progress(75)
-
+        if (tt_fetch or tt_pat) and tt_user.strip():
+            prog = st.progress(0); stat_box = st.empty()
+            stat_box.markdown('<div class="info-box">📡 Fetching TikTok profile & videos...</div>', unsafe_allow_html=True)
+            prog.progress(15)
+            profile = fetch_tiktok_creator(tt_user.strip(), rapidapi_key, max_videos=20)
+            prog.progress(40)
+            stats = compute_video_stats(profile.get("videos",[]))
+            stat_box.markdown('<div class="info-box">🧠 Running AI strategy analysis...</div>', unsafe_allow_html=True)
+            prog.progress(60)
             analysis = analyze_creator(client, profile)
-            progress.progress(100)
-            status.empty()
+            transcribed, patterns = [], {}
+            if tt_pat and profile.get("videos"):
+                stat_box.markdown('<div class="info-box">🎤 Transcribing top 3 videos (~2 min)...</div>', unsafe_allow_html=True)
+                prog.progress(75)
+                transcribed = transcribe_top_videos(client, profile["videos"], n=3)
+                stat_box.markdown('<div class="info-box">🔍 Extracting talking patterns...</div>', unsafe_allow_html=True)
+                prog.progress(90)
+                patterns = extract_creator_patterns(client, transcribed, profile)
+            prog.progress(100); stat_box.empty()
+            render_creator(profile, analysis, stats, transcribed, patterns, "#1d9bf0", "tiktok")
+        elif tt_fetch or tt_pat:
+            st.warning("Enter a username first.")
 
-            render_creator_results(profile, analysis, stats, "#1d9bf0")
-
-        elif tt_btn:
-            st.warning("Please enter a username.")
-
-    # ── Instagram tab ─────────────────────────────────────────────────────────
-    with plat_ig:
+    # ─────────────────────────────────────────────────────────────────────────
+    # Instagram tab
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_ig:
         st.markdown("### 📸 Instagram Creator")
-        col_in, col_btn = st.columns([3, 1])
-        with col_in:
-            ig_username = st.text_input("Instagram username", placeholder="e.g. natgeo or @natgeo",
-                                         label_visibility="collapsed", key="ig_username")
-        with col_btn:
-            ig_btn = st.button("⚡ Analyze", key="ig_analyze_btn")
-
         if not rapidapi_key:
-            st.markdown('<div class="info-box" style="border-color:#f59e0b">⚠️ No RapidAPI key — will try instaloader. Some accounts may be rate-limited. Add key for full access.</div>', unsafe_allow_html=True)
+            st.markdown('<div class="info-box" style="border-color:#f59e0b">⚠️ No RapidAPI key — trying instaloader. Public accounts only. Add key for full access.</div>', unsafe_allow_html=True)
 
-        if ig_btn and ig_username.strip():
-            progress = st.progress(0)
-            status   = st.empty()
+        ii1, ii2, ii3 = st.columns([3,1,1])
+        with ii1:
+            ig_user = st.text_input("Instagram username", placeholder="e.g. natgeo",
+                                    label_visibility="collapsed", key="ig_username_input")
+        with ii2:
+            ig_fetch = st.button("⚡ Fetch", key="ig_fetch_btn", use_container_width=True)
+        with ii3:
+            ig_pat   = st.button("🎤 + Patterns", key="ig_pat_btn", use_container_width=True)
 
-            status.markdown('<div class="info-box">📡 Fetching Instagram profile...</div>', unsafe_allow_html=True)
-            progress.progress(20)
-
-            profile = fetch_instagram_creator(ig_username.strip(), rapidapi_key, max_videos=15)
-            progress.progress(50)
-
-            stats    = compute_video_stats(profile.get("videos", []))
-            status.markdown('<div class="info-box">🧠 Running AI analysis...</div>', unsafe_allow_html=True)
-            progress.progress(75)
-
+        if (ig_fetch or ig_pat) and ig_user.strip():
+            prog = st.progress(0); stat_box = st.empty()
+            stat_box.markdown('<div class="info-box">📡 Fetching Instagram profile & posts...</div>', unsafe_allow_html=True)
+            prog.progress(15)
+            profile = fetch_instagram_creator(ig_user.strip(), rapidapi_key, max_videos=20)
+            prog.progress(40)
+            stats = compute_video_stats(profile.get("videos",[]))
+            stat_box.markdown('<div class="info-box">🧠 Running AI strategy analysis...</div>', unsafe_allow_html=True)
+            prog.progress(60)
             analysis = analyze_creator(client, profile)
-            progress.progress(100)
-            status.empty()
+            transcribed, patterns = [], {}
+            if ig_pat and profile.get("videos"):
+                stat_box.markdown('<div class="info-box">🎤 Transcribing top 3 reels...</div>', unsafe_allow_html=True)
+                prog.progress(75)
+                transcribed = transcribe_top_videos(client, profile["videos"], n=3)
+                stat_box.markdown('<div class="info-box">🔍 Extracting talking patterns...</div>', unsafe_allow_html=True)
+                prog.progress(90)
+                patterns = extract_creator_patterns(client, transcribed, profile)
+            prog.progress(100); stat_box.empty()
+            render_creator(profile, analysis, stats, transcribed, patterns, "#e1306c", "instagram")
+        elif ig_fetch or ig_pat:
+            st.warning("Enter a username first.")
 
-            render_creator_results(profile, analysis, stats, "#e1306c")
-
-        elif ig_btn:
-            st.warning("Please enter a username.")
-
-    # ── YouTube tab ───────────────────────────────────────────────────────────
-    with plat_yt:
+    # ─────────────────────────────────────────────────────────────────────────
+    # YouTube tab
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_yt:
         st.markdown("### ▶️ YouTube Creator")
-        col_in, col_btn = st.columns([3, 1])
-        with col_in:
-            yt_username = st.text_input("YouTube handle", placeholder="e.g. @MrBeast or MrBeast",
-                                         label_visibility="collapsed", key="yt_username")
-        with col_btn:
-            yt_btn = st.button("⚡ Analyze", key="yt_analyze_btn")
+        if youtube_api_key:
+            st.markdown('<div class="info-box" style="border-color:#10b981">✅ YouTube Data API v3 active — full stats, subscriber count, all video metadata.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="info-box" style="border-color:#f59e0b">⚠️ No YouTube API key — using yt-dlp (limited: no subs count). Free key at <strong>console.cloud.google.com</strong> → APIs → YouTube Data API v3 → Create credentials → API key</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="info-box">✅ YouTube works without any API key via yt-dlp.</div>', unsafe_allow_html=True)
+        yi1, yi2, yi3 = st.columns([3,1,1])
+        with yi1:
+            yt_user = st.text_input("YouTube handle", placeholder="e.g. @MrBeast",
+                                    label_visibility="collapsed", key="yt_username_input")
+        with yi2:
+            yt_fetch = st.button("⚡ Fetch", key="yt_fetch_btn", use_container_width=True)
+        with yi3:
+            yt_pat   = st.button("🎤 + Patterns", key="yt_pat_btn", use_container_width=True)
 
-        if yt_btn and yt_username.strip():
-            progress = st.progress(0)
-            status   = st.empty()
-
-            status.markdown('<div class="info-box">📡 Fetching YouTube channel...</div>', unsafe_allow_html=True)
-            progress.progress(20)
-
-            profile = fetch_youtube_creator(yt_username.strip(), max_videos=15)
-            progress.progress(50)
-
-            stats    = compute_video_stats(profile.get("videos", []))
-            status.markdown('<div class="info-box">🧠 Running AI analysis...</div>', unsafe_allow_html=True)
-            progress.progress(75)
-
+        if (yt_fetch or yt_pat) and yt_user.strip():
+            prog = st.progress(0); stat_box = st.empty()
+            stat_box.markdown('<div class="info-box">📡 Fetching YouTube channel & videos...</div>', unsafe_allow_html=True)
+            prog.progress(15)
+            profile = fetch_youtube_creator(yt_user.strip(), youtube_api_key, max_videos=20)
+            prog.progress(40)
+            stats = compute_video_stats(profile.get("videos",[]))
+            stat_box.markdown('<div class="info-box">🧠 Running AI strategy analysis...</div>', unsafe_allow_html=True)
+            prog.progress(60)
             analysis = analyze_creator(client, profile)
-            progress.progress(100)
-            status.empty()
-
-            render_creator_results(profile, analysis, stats, "#ff0000")
-
-        elif yt_btn:
-            st.warning("Please enter a channel handle.")
+            transcribed, patterns = [], {}
+            if yt_pat and profile.get("videos"):
+                stat_box.markdown('<div class="info-box">🎤 Transcribing top 3 videos (~2 min)...</div>', unsafe_allow_html=True)
+                prog.progress(75)
+                transcribed = transcribe_top_videos(client, profile["videos"], n=3)
+                stat_box.markdown('<div class="info-box">🔍 Extracting talking patterns...</div>', unsafe_allow_html=True)
+                prog.progress(90)
+                patterns = extract_creator_patterns(client, transcribed, profile)
+            prog.progress(100); stat_box.empty()
+            render_creator(profile, analysis, stats, transcribed, patterns, "#ff0000", "youtube")
+        elif yt_fetch or yt_pat:
+            st.warning("Enter a channel handle first.")
