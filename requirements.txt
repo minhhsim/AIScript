@@ -13,3 +13,4 @@ plotly>=5.18.0
 pydub>=0.25.1
 yt-dlp>=2024.1.0
 instaloader>=4.10
+pytrends>=4.9.2
