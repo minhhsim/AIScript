@@ -271,14 +271,15 @@ with st.sidebar:
     st.markdown('<p style="color:#6b6b8a;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;">Navigation</p>', unsafe_allow_html=True)
 
     pages = {
-        "🎯 Brand Setup":      "brand",
-        "📝 Script Analyzer":  "analyzer",
-        "✍️ Script Generator": "generator",
-        "📊 Market Research":  "market",
-        "🎬 Video Feedback":   "video",
-        "🔗 URL Analyzer":     "url",
-        "👤 Creator Analyzer": "creator",
-        "💬 Script Chat":      "chat",
+        "🎯 Brand Setup":       "brand",
+        "📝 Script Analyzer":   "analyzer",
+        "✍️ Script Generator":  "generator",
+        "📊 Market Research":   "market",
+        "🤖 Research Agent":    "research",
+        "🎬 Video Feedback":    "video",
+        "🔗 URL Analyzer":      "url",
+        "👤 Creator Analyzer":  "creator",
+        "💬 Script Chat":       "chat",
     }
     page = st.radio("", list(pages.keys()), label_visibility="collapsed")
     current_page = pages[page]
@@ -2556,6 +2557,457 @@ elif current_page == "creator":
             render_creator(profile, analysis, stats, transcribed, patterns, "#ff0000", "youtube")
         elif yt_fetch or yt_pat:
             st.warning("Enter a channel handle first.")
+
+# ════════════════════════════════════════════════════════════════════
+# PAGE: RESEARCH AGENT
+# ════════════════════════════════════════════════════════════════════
+elif current_page == "research":
+    import requests as _req_mod
+    from modules.research_agent import run_full_pipeline
+    from modules.brand_rag import query_brand_context, get_document_count
+
+    try:
+        from apikeys import rapidapi_key as _ra_key, youtube_api_key as _yt_api_key
+    except Exception:
+        _ra_key = ""; _yt_api_key = ""
+
+    _has_yt  = bool(_yt_api_key and _yt_api_key not in ("","YOUR_YOUTUBE_KEY"))
+    _has_rap = bool(_ra_key and _ra_key not in ("","YOUR_RAPIDAPI_KEY"))
+
+    # Session state
+    for _k, _v in {
+        "ra_results":None, "ra_running":False, "ra_niche":"",
+        "ra_active_agent":0, "ra_log":[],
+    }.items():
+        if _k not in st.session_state: st.session_state[_k] = _v
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown("# 🤖 Research Agent Pipeline")
+    st.markdown(
+        '<p style="color:#6b6b8a;font-size:0.95rem">'
+        '6 AI agents: Niche Research → Keyword Expansion → Trend Detection → '
+        'Viral Hooks → Script Generation → Content Calendar.</p>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Engine status ─────────────────────────────────────────────────────────
+    _eng = []
+    _eng.append('<span style="color:#10b981;font-weight:700">⚡ Groq AI (primary engine — always active)</span>')
+    _eng.append(f'<span style="color:{"#ff0000" if _has_yt else "#4a4a6a"}">{"✓" if _has_yt else "○"} YouTube API {"(live video data)" if _has_yt else "(add key for live data)"}</span>')
+    _eng.append(f'<span style="color:{"#7c3aed" if _has_rap else "#4a4a6a"}">{"✓" if _has_rap else "○"} RapidAPI {"(live web/Reddit)" if _has_rap else "(add key for live web data)"}</span>')
+    _eng.append('<span style="color:#ff4500">✓ Reddit public API (always active)</span>')
+    st.markdown(
+        '<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;'
+        'padding:10px 16px;margin-bottom:16px;display:flex;flex-wrap:wrap;gap:16px;font-size:0.8rem">'
+        + " &nbsp;·&nbsp; ".join(_eng) + '</div>',
+        unsafe_allow_html=True,
+    )
+    if not _has_yt and not _has_rap:
+        st.info("💡 Running on **Groq AI + Reddit** — add YouTube/RapidAPI keys in `apikeys.py` to enrich with live web data. Results are still fully functional.")
+
+    # ── Agent strip ───────────────────────────────────────────────────────────
+    _AMETA = [("1","Niche Research","#7c3aed"),("2","Keywords","#06b6d4"),
+              ("3","Trends","#f59e0b"),("4","Hooks","#ec4899"),
+              ("5","Scripts","#10b981"),("6","Calendar","#ef4444")]
+    _active_a = st.session_state.get("ra_active_agent",0)
+    _acols    = st.columns(6)
+    for _ac, (_n, _name, _clr) in zip(_acols, _AMETA):
+        _ni = int(_n)
+        _isa = (_ni == _active_a); _isd = (_ni < _active_a)
+        _bg  = f"{_clr}22" if (_isa or _isd) else "#0a0a14"
+        _brd = f"2px solid {_clr}" if _isa else f"1px solid {'#2a2a3a' if not _isd else _clr+'44'}"
+        _ico = "⚡" if _isa else ("✓" if _isd else _n)
+        _ac.markdown(
+            f'<div style="background:{_bg};border:{_brd};border-radius:10px;padding:9px 6px;text-align:center">'
+            f'<div style="color:{_clr};font-size:1.1rem;font-weight:800">{_ico}</div>'
+            f'<div style="color:{"#e8e8f0" if _isa else "#6b6b8a"};font-size:0.65rem;font-weight:600">{_name}</div>'
+            f'</div>', unsafe_allow_html=True)
+    st.markdown("")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # CONFIG PANEL
+    # ══════════════════════════════════════════════════════════════════════════
+    if not st.session_state["ra_running"] and not st.session_state["ra_results"]:
+        st.markdown("### ⚙️ Configure Pipeline")
+        _cl, _cr = st.columns([3,2])
+        with _cl:
+            _niche_inp = st.text_input(
+                "Client Niche / Industry",
+                placeholder="e.g. car dealership, vegan skincare, fitness coaching, real estate...",
+                key="ra_niche_inp",
+            )
+            _platforms_inp = st.multiselect(
+                "Target Platforms",
+                ["TikTok","YouTube Shorts","Instagram Reels","YouTube Long","LinkedIn"],
+                default=["TikTok","YouTube Shorts","Instagram Reels"],
+                key="ra_plat_inp",
+            )
+            _cw1, _cw2 = st.columns(2)
+            _weeks_inp = _cw1.slider("Calendar weeks", 1, 8, 4, key="ra_wk")
+            _ppw_inp   = _cw2.slider("Posts / week",   3, 14, 5, key="ra_ppw")
+        with _cr:
+            _doc_cnt = get_document_count()
+            st.markdown("**🏷️ Brand Context**")
+            if _doc_cnt > 0:
+                st.markdown(f'<div class="info-box" style="border-color:#10b981">✓ Brand RAG active ({_doc_cnt} docs)<br><span style="color:#6b6b8a;font-size:0.78rem">Scripts will be brand-aligned</span></div>', unsafe_allow_html=True)
+                _brand_cb = st.checkbox("Inject into scripts", value=True, key="ra_brand_cb")
+            else:
+                st.markdown('<div class="warn-box">No brand docs<br><span style="color:#9090b0;font-size:0.78rem">Upload in 🎯 Brand Setup</span></div>', unsafe_allow_html=True)
+                _brand_cb = False
+
+            st.markdown("""<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:12px;font-size:0.78rem;color:#6b6b8a;line-height:1.8;margin-top:8px">
+<strong style="color:#e8e8f0">What runs:</strong><br>
+1️⃣ Groq generates niche intelligence<br>
+2️⃣ Expands 300–500 long-tail keywords<br>
+3️⃣ Scores keyword trend velocity<br>
+4️⃣ Extracts viral hook patterns<br>
+5️⃣ Writes platform-specific scripts<br>
+6️⃣ Builds weekly content calendar<br><br>
+⏱️ <strong style="color:#e8e8f0">~3–6 minutes</strong>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown("")
+        _run_btn = st.button(
+            "🚀 Run Full Pipeline", type="primary",
+            use_container_width=True, key="ra_run",
+            disabled=not bool(_niche_inp.strip() if "_niche_inp" in dir() else False),
+        )
+        if _run_btn and _niche_inp.strip():
+            st.session_state.update({
+                "ra_niche":        _niche_inp.strip(),
+                "ra_running":      True,
+                "ra_results":      None,
+                "ra_active_agent": 1,
+                "ra_log":          [],
+                "_ra_plats":       _platforms_inp,
+                "_ra_weeks":       _weeks_inp,
+                "_ra_ppw":         _ppw_inp,
+                "_ra_brand":       _brand_cb,
+            })
+            st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RUNNING STATE
+    # ══════════════════════════════════════════════════════════════════════════
+    elif st.session_state["ra_running"]:
+        _niche     = st.session_state["ra_niche"]
+        _plats     = st.session_state.get("_ra_plats",["TikTok","YouTube Shorts"])
+        _wks       = st.session_state.get("_ra_weeks",4)
+        _ppw       = st.session_state.get("_ra_ppw",5)
+        _use_brand = st.session_state.get("_ra_brand",False)
+
+        _brand_ctx = ""
+        if _use_brand and get_document_count() > 0:
+            _brand_ctx = query_brand_context(f"{_niche} content strategy audience", top_k=6)
+
+        st.markdown(f"### 🤖 Running pipeline for: **{_niche}**")
+        st.markdown(
+            '<div class="info-box">⏳ <strong>Running — do not navigate away.</strong> '
+            'Groq is generating your full research package. Takes 3–6 minutes.</div>',
+            unsafe_allow_html=True,
+        )
+
+        _ACOLORS = {1:"#7c3aed",2:"#06b6d4",3:"#f59e0b",4:"#ec4899",5:"#10b981",6:"#ef4444"}
+        _ALABELS = {1:"🔍 Niche Research",2:"🔑 Keyword Expansion",3:"📈 Trend Detection",
+                    4:"🎣 Viral Hooks",5:"✍️ Scripts",6:"📅 Calendar"}
+
+        _pbar    = st.progress(0)
+        _statbox = st.empty()
+        _logbox  = st.empty()
+        _log     = []
+
+        def _apcb(agent_num, pct, msg):
+            st.session_state["ra_active_agent"] = agent_num
+            _log.append(f"[A{agent_num}] {msg}")
+            if len(_log) > 10: _log.pop(0)
+
+            overall = min(99, int(((agent_num-1)*100 + pct) / 600 * 100))
+            _pbar.progress(overall, text=f"Agent {agent_num}/6 · {pct}% · {msg[:55]}...")
+
+            _clr = _ACOLORS.get(agent_num,"#7c3aed")
+            _lbl = _ALABELS.get(agent_num,"")
+            _statbox.markdown(
+                f'<div style="background:#0a0a14;border:1px solid {_clr}44;border-left:4px solid {_clr};'
+                f'border-radius:8px;padding:10px 14px">'
+                f'<span style="color:{_clr};font-weight:700">Agent {agent_num}: {_lbl}</span><br>'
+                f'<span style="color:#9090b0;font-size:0.85rem">{msg}</span></div>',
+                unsafe_allow_html=True,
+            )
+            _rows = "".join(
+                f'<div style="color:{"#7c3aed" if j==len(_log)-1 else "#3a3a5a"};font-size:0.75rem;padding:1px 0">'
+                f'{"▶ " if j==len(_log)-1 else "  "}{l}</div>'
+                for j,l in enumerate(_log)
+            )
+            _logbox.markdown(
+                f'<div style="background:#060610;border:1px solid #181828;border-radius:6px;padding:8px 12px">{_rows}</div>',
+                unsafe_allow_html=True,
+            )
+
+        try:
+            _results = run_full_pipeline(
+                client, _niche, _plats, _wks, _ppw,
+                _yt_api_key, _ra_key, _brand_ctx, _apcb,
+            )
+            _pbar.progress(100, text="✅ Pipeline complete!")
+            st.session_state["ra_results"]      = _results
+            st.session_state["ra_running"]      = False
+            st.session_state["ra_active_agent"] = 0
+            time.sleep(0.5)
+            st.rerun()
+        except Exception as _err:
+            import traceback
+            st.error(f"Pipeline error: {_err}")
+            st.code(traceback.format_exc())
+            st.session_state["ra_running"]      = False
+            st.session_state["ra_active_agent"] = 0
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RESULTS STATE
+    # ══════════════════════════════════════════════════════════════════════════
+    elif st.session_state["ra_results"]:
+        _R          = st.session_state["ra_results"]
+        _niche      = _R.get("niche", st.session_state.get("ra_niche",""))
+        _clusters   = _R.get("clusters",[])
+        _kwg        = _R.get("keyword_groups",{})
+        _trends     = _R.get("trends",[])
+        _hooks      = _R.get("hook_data",{})
+        _scripts    = _R.get("scripts_data",[])
+        _cal        = _R.get("calendar",[])
+        _enrich     = _R.get("enrichment",{})
+        _total_kws  = sum(g.get("total",0) for g in _kwg.values())
+        _emerging   = sum(1 for t in _trends if t.get("status") in ("EMERGING","GROWING"))
+        _cal_posts  = sum(len(w.get("posts",[])) for w in _cal)
+
+        # Summary strip
+        st.markdown(f"### ✅ Research results for: **{_niche}**")
+        _sc = st.columns(4)
+        for _col, (_lbl,_val,_c) in zip(_sc, [
+            ("📡 Signals collected", str(_R.get("signal_count",0)), "#7c3aed"),
+            ("🟠 Reddit posts",      str(len(_enrich.get("reddit_hot",[]))), "#ff4500"),
+            ("📺 YouTube videos",    str(len(_enrich.get("youtube_viral",[]))), "#ff0000"),
+            ("🔑 Search queries",    str(len(_enrich.get("search_queries",[]))), "#06b6d4"),
+        ]):
+            _col.markdown(
+                f'<div class="score-card"><div class="score-number" style="font-size:1.4rem;color:{_c}">{_val}</div>'
+                f'<div class="score-label">{_lbl}</div></div>',
+                unsafe_allow_html=True)
+
+        st.markdown("")
+        if st.button("🔄 New Research", key="ra_reset"):
+            st.session_state["ra_results"] = None
+            st.session_state["ra_niche"]   = ""
+            st.session_state["ra_running"] = False
+            st.rerun()
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+        # ── Reddit Hot Posts ──────────────────────────────────────────────────
+        _reddit_posts = _enrich.get("reddit_hot",[])
+        if _reddit_posts:
+            st.markdown("### 🟠 Reddit — Hot Posts")
+            for _p in _reddit_posts:
+                _sc3   = int(_p.get("score", _p.get("upvotes", 0)) or 0)
+                _title = _p.get("title","")
+                _sub   = _p.get("subreddit","")
+                _url   = _p.get("url","")
+                _body  = _p.get("body","")[:120]
+                # Build Reddit search link if no direct URL
+                if not _url and _title:
+                    _url = f"https://www.reddit.com/search/?q={_req_mod.utils.quote(_title)}&sort=relevance"
+                _link_html = (
+                    f'<a href="{_url}" target="_blank" style="color:#ff4500;font-size:0.7rem;text-decoration:none;font-weight:600">↗ open</a>'
+                    if _url else ""
+                )
+                _sub_html = (
+                    f'<a href="https://www.reddit.com/{_sub}" target="_blank" style="color:#4a4a6a;font-size:0.7rem;text-decoration:none">{_sub}</a>'
+                    if _sub else ""
+                )
+                _body_html = f'<div style="color:#9090b0;font-size:0.76rem;margin-top:3px">{_body}...</div>' if _body else ""
+                st.markdown(
+                    f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-left:3px solid #ff4500;'
+                    f'border-radius:8px;padding:10px 14px;margin-bottom:6px">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+                    f'<div style="flex:1">'
+                    f'<span style="color:#ff4500;font-size:0.72rem;font-weight:700">▲ {_sc3:,}</span>'
+                    f'<span style="color:#e8e8f0;font-size:0.87rem;font-weight:600;margin-left:8px">{_title}</span>'
+                    f'{_body_html}'
+                    f'</div>'
+                    f'<div style="display:flex;gap:8px;align-items:center;white-space:nowrap">'
+                    f'{_sub_html}'
+                    f'{_link_html}'
+                    f'</div></div></div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("")
+
+        # ── YouTube Viral Videos ──────────────────────────────────────────────
+        _yt_videos = _enrich.get("youtube_viral",[])
+        if _yt_videos:
+            st.markdown("### 📺 YouTube — Viral Videos")
+            for _v in _yt_videos:
+                _vtitle   = _v.get("title","")
+                _vchannel = _v.get("channel","")
+                _views    = _v.get("views", _v.get("view_estimate",""))
+                _vurl     = _v.get("url","")
+                _vwhy     = _v.get("why_works","") or _v.get("body","")
+                # Build YouTube search URL if no direct link
+                if not _vurl and _vtitle:
+                    _vurl = f"https://www.youtube.com/results?search_query={_req_mod.utils.quote(_vtitle)}"
+                _vlink = (
+                    f'<a href="{_vurl}" target="_blank" style="color:#ff0000;font-size:0.7rem;text-decoration:none;font-weight:600">▶ watch</a>'
+                    if _vurl else ""
+                )
+                _views_fmt = f"{int(_views):,}" if str(_views).isdigit() else str(_views)
+                _vwhy_html  = f'<div style="color:#9090b0;font-size:0.76rem;margin-top:3px">{_vwhy[:100]}</div>' if _vwhy else ""
+                _views_html = f'<span style="color:#4a4a6a;font-size:0.7rem">👁 {_views_fmt}</span>' if _views_fmt else ""
+                _chan_html   = f'<span style="color:#4a4a6a;font-size:0.7rem">{_vchannel}</span>' if _vchannel else ""
+                st.markdown(
+                    f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-left:3px solid #ff0000;'
+                    f'border-radius:8px;padding:10px 14px;margin-bottom:6px">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">'
+                    f'<div style="flex:1">'
+                    f'<span style="color:#e8e8f0;font-size:0.87rem;font-weight:600">{_vtitle}</span>'
+                    f'{_vwhy_html}'
+                    f'</div>'
+                    f'<div style="display:flex;gap:10px;align-items:center;white-space:nowrap">'
+                    f'{_views_html}'
+                    f'{_chan_html}'
+                    f'{_vlink}'
+                    f'</div></div></div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("")
+
+        # ── Search Queries ────────────────────────────────────────────────────
+        _queries = _enrich.get("search_queries",[])
+        if _queries:
+            st.markdown("### 🔍 Search Queries People Use")
+            _qrows = []
+            for _q in _queries:
+                _qurl = f"https://www.google.com/search?q={_req_mod.utils.quote(str(_q))}"
+                _yturl = f"https://www.youtube.com/results?search_query={_req_mod.utils.quote(str(_q))}"
+                _qrows.append(
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                    f'border-bottom:1px solid #12121f;padding:7px 0">'
+                    f'<span style="color:#e8e8f0;font-size:0.85rem">{_q}</span>'
+                    f'<div style="display:flex;gap:10px">'
+                    f'<a href="{_qurl}" target="_blank" style="color:#4285f4;font-size:0.72rem;text-decoration:none">Google ↗</a>'
+                    f'<a href="{_yturl}" target="_blank" style="color:#ff0000;font-size:0.72rem;text-decoration:none">YouTube ↗</a>'
+                    f'</div></div>'
+                )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + "".join(_qrows) + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")
+
+        # ── Pain Points ───────────────────────────────────────────────────────
+        _pains = _enrich.get("pain_points",[])
+        if _pains:
+            st.markdown("### 😤 Pain Points Identified")
+            _pain_html = "".join(
+                f'<div style="display:flex;align-items:flex-start;gap:8px;border-bottom:1px solid #12121f;padding:7px 0">'
+                f'<span style="color:#ef4444;font-size:0.8rem;margin-top:1px">●</span>'
+                f'<span style="color:#e8e8f0;font-size:0.85rem;flex:1">{_pp}</span>'
+                f'<a href="https://www.reddit.com/search/?q={_req_mod.utils.quote(str(_pp))}" target="_blank" '
+                f'style="color:#4a4a6a;font-size:0.7rem;text-decoration:none;white-space:nowrap">Reddit ↗</a>'
+                f'</div>'
+                for _pp in _pains
+            )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + _pain_html + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")
+
+        # ── Common Questions ──────────────────────────────────────────────────
+        _questions = _enrich.get("questions",[])
+        if _questions:
+            st.markdown("### ❓ Questions People Are Asking")
+            _q_html = "".join(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                f'border-bottom:1px solid #12121f;padding:7px 0">'
+                f'<span style="color:#e8e8f0;font-size:0.85rem">{_qq}</span>'
+                f'<div style="display:flex;gap:10px">'
+                f'<a href="https://www.google.com/search?q={_req_mod.utils.quote(str(_qq))}" target="_blank" style="color:#4285f4;font-size:0.72rem;text-decoration:none">Google ↗</a>'
+                f'<a href="https://www.youtube.com/results?search_query={_req_mod.utils.quote(str(_qq))}" target="_blank" style="color:#ff0000;font-size:0.72rem;text-decoration:none">YouTube ↗</a>'
+                f'<a href="https://www.reddit.com/search/?q={_req_mod.utils.quote(str(_qq))}" target="_blank" style="color:#ff4500;font-size:0.72rem;text-decoration:none">Reddit ↗</a>'
+                f'</div></div>'
+                for _qq in _questions
+            )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + _q_html + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")
+
+        # ── Trending Topics ───────────────────────────────────────────────────
+        _trending = _enrich.get("trending",[])
+        if _trending:
+            st.markdown("### 📈 Trending Topics Right Now")
+            _tr_html = "".join(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                f'border-bottom:1px solid #12121f;padding:7px 0">'
+                f'<span style="color:#e8e8f0;font-size:0.85rem">🔥 {_tr}</span>'
+                f'<div style="display:flex;gap:10px">'
+                f'<a href="https://trends.google.com/trends/explore?q={_req_mod.utils.quote(str(_tr))}" target="_blank" style="color:#4285f4;font-size:0.72rem;text-decoration:none">Trends ↗</a>'
+                f'<a href="https://www.tiktok.com/search?q={_req_mod.utils.quote(str(_tr))}" target="_blank" style="color:#1d9bf0;font-size:0.72rem;text-decoration:none">TikTok ↗</a>'
+                f'<a href="https://www.youtube.com/results?search_query={_req_mod.utils.quote(str(_tr))}" target="_blank" style="color:#ff0000;font-size:0.72rem;text-decoration:none">YouTube ↗</a>'
+                f'</div></div>'
+                for _tr in _trending
+            )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + _tr_html + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")
+
+        # ── Controversial Angles ──────────────────────────────────────────────
+        _controversial = _enrich.get("controversial",[])
+        if _controversial:
+            st.markdown("### 🔥 High-Engagement Controversial Angles")
+            _ca_html = "".join(
+                f'<div style="display:flex;align-items:flex-start;gap:8px;border-bottom:1px solid #12121f;padding:7px 0">'
+                f'<span style="color:#ec4899;font-size:0.8rem;margin-top:1px">◆</span>'
+                f'<span style="color:#e8e8f0;font-size:0.85rem;flex:1">{_ca}</span>'
+                f'<a href="https://www.reddit.com/search/?q={_req_mod.utils.quote(str(_ca))}&sort=controversial" '
+                f'target="_blank" style="color:#4a4a6a;font-size:0.7rem;text-decoration:none;white-space:nowrap">Reddit ↗</a>'
+                f'</div>'
+                for _ca in _controversial
+            )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + _ca_html + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("")
+
+        # ── Buyer Objections ──────────────────────────────────────────────────
+        _objections = _enrich.get("objections",[])
+        if _objections:
+            st.markdown("### 🚧 Buyer Objections to Address")
+            _ob_html = "".join(
+                f'<div style="display:flex;align-items:flex-start;gap:8px;border-bottom:1px solid #12121f;padding:7px 0">'
+                f'<span style="color:#f59e0b;font-size:0.8rem;margin-top:1px">⚠</span>'
+                f'<span style="color:#e8e8f0;font-size:0.85rem">{_ob}</span>'
+                f'</div>'
+                for _ob in _objections
+            )
+            st.markdown(
+                f'<div style="background:#0d0d1a;border:1px solid #1e1e30;border-radius:8px;padding:4px 14px">'
+                + _ob_html + "</div>",
+                unsafe_allow_html=True,
+            )
 
 # ════════════════════════════════════════════════════════════════════
 # PAGE: MARKET RESEARCH
