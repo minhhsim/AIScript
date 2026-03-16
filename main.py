@@ -256,9 +256,36 @@ h1, h2, h3 {
 """, unsafe_allow_html=True)
 
 # ── Groq client ───────────────────────────────────────────────────────────────
+# Re-import fresh so we pick up secrets that loaded after module import
+from apikeys import groq_key as _fresh_groq_key
+
+if not _fresh_groq_key or _fresh_groq_key in ("", "YOUR_GROQ_KEY_HERE"):
+    st.error("### 🔑 Groq API key not found")
+    st.markdown("""
+**Add your Groq key to continue:**
+
+**On Streamlit Cloud:**
+1. Go to your app dashboard → ⋮ menu → **Settings** → **Secrets**
+2. Add this exactly:
+```toml
+GROQ_KEY = "gsk_your_key_here"
+```
+3. Save and **Reboot app**
+
+**Locally:**
+Edit `apikeys.py` and set:
+```python
+groq_key = "gsk_your_key_here"
+```
+
+Get a free key at [console.groq.com](https://console.groq.com) — takes 30 seconds.
+""")
+    st.stop()
+
 @st.cache_resource
 def get_groq_client():
-    return Groq(api_key=groq_key)
+    from apikeys import groq_key as _k
+    return Groq(api_key=_k)
 
 client = get_groq_client()
 
@@ -812,18 +839,26 @@ elif current_page == "generator":
             output_box  = st.empty()
             full_script = ""
 
-            stream = generate_script(
-                client, topic, platform, duration, tone,
-                hook_type, framework, emotions, conditions,
-                brand_context     = brand_ctx,
-                brand_intelligence = brand_intel_block,
-                topic_research    = topic_facts,
-                creator_style     = creator_style,
-                trend_data        = trend_data,
-            )
-            for chunk in stream:
-                full_script += chunk
-                output_box.markdown(f'<div class="script-output">{full_script}▌</div>', unsafe_allow_html=True)
+            try:
+                stream = generate_script(
+                    client, topic, platform, duration, tone,
+                    hook_type, framework, emotions, conditions,
+                    brand_context     = brand_ctx,
+                    brand_intelligence = brand_intel_block,
+                    topic_research    = topic_facts,
+                    creator_style     = creator_style,
+                    trend_data        = trend_data,
+                )
+                for chunk in stream:
+                    full_script += chunk
+                    output_box.markdown(f'<div class="script-output">{full_script}▌</div>', unsafe_allow_html=True)
+            except Exception as _gen_err:
+                _err_str = str(_gen_err)
+                if "auth" in _err_str.lower() or "401" in _err_str or "api_key" in _err_str.lower():
+                    st.error("🔑 **Groq authentication failed.** Check your API key in Streamlit secrets (`GROQ_KEY`) or `apikeys.py`.")
+                else:
+                    st.error(f"Script generation error: {_gen_err}")
+                st.stop()
 
             prog.progress(100); status.empty()
             output_box.markdown(f'<div class="script-output">{full_script}</div>', unsafe_allow_html=True)
