@@ -10,7 +10,6 @@ import plotly.express as px
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from apikeys import groq_key
 from groq import Groq
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -256,38 +255,63 @@ h1, h2, h3 {
 """, unsafe_allow_html=True)
 
 # ── Groq client ───────────────────────────────────────────────────────────────
-# Re-import fresh so we pick up secrets that loaded after module import
-from apikeys import groq_key as _fresh_groq_key
+# Read key AFTER st.set_page_config so st.secrets is fully available
+def _load_groq_key():
+    """Read Groq key from st.secrets, env vars, or apikeys.py — in that order."""
+    # 1. Streamlit secrets (Streamlit Cloud or local .streamlit/secrets.toml)
+    try:
+        for name in ("GROQ_KEY", "groq_key", "GROQ_API_KEY", "groq_api_key"):
+            val = st.secrets.get(name, "")
+            if val:
+                return str(val).strip()
+    except Exception:
+        pass
+    # 2. Environment variable
+    import os
+    for name in ("GROQ_KEY", "groq_key", "GROQ_API_KEY", "groq_api_key"):
+        val = os.environ.get(name, "")
+        if val:
+            return val.strip()
+    # 3. apikeys.py hardcoded fallback
+    try:
+        import importlib, sys
+        # Force reload so we don't get a cached empty value
+        if "apikeys" in sys.modules:
+            del sys.modules["apikeys"]
+        import apikeys as _ak
+        if getattr(_ak, "groq_key", "") and _ak.groq_key not in ("", "YOUR_GROQ_KEY_HERE"):
+            return _ak.groq_key
+    except Exception:
+        pass
+    return ""
 
-if not _fresh_groq_key or _fresh_groq_key in ("", "YOUR_GROQ_KEY_HERE"):
-    st.error("### 🔑 Groq API key not found")
+_groq_key = _load_groq_key()
+
+if not _groq_key:
+    st.error("### 🔑 Groq API key not configured")
     st.markdown("""
-**Add your Groq key to continue:**
+**To fix this, add your key to Streamlit secrets:**
 
-**On Streamlit Cloud:**
-1. Go to your app dashboard → ⋮ menu → **Settings** → **Secrets**
-2. Add this exactly:
+1. Go to your app on [share.streamlit.io](https://share.streamlit.io)
+2. Click **⋮ → Settings → Secrets**
+3. Paste exactly:
 ```toml
-GROQ_KEY = "gsk_your_key_here"
+GROQ_KEY = "gsk_xxxxxxxxxxxxxxxxxxxx"
 ```
-3. Save and **Reboot app**
+4. Click **Save** then **Reboot app**
 
-**Locally:**
-Edit `apikeys.py` and set:
-```python
-groq_key = "gsk_your_key_here"
-```
+Get a free key at **[console.groq.com](https://console.groq.com)** — takes 30 seconds.
 
-Get a free key at [console.groq.com](https://console.groq.com) — takes 30 seconds.
+---
+**Running locally?** Create `.streamlit/secrets.toml` and add the same line, or set env var `GROQ_KEY`.
 """)
     st.stop()
 
 @st.cache_resource
-def get_groq_client():
-    from apikeys import groq_key as _k
-    return Groq(api_key=_k)
+def get_groq_client(_key: str):
+    return Groq(api_key=_key)
 
-client = get_groq_client()
+client = get_groq_client(_groq_key)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
