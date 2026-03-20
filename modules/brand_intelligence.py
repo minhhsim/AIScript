@@ -14,7 +14,7 @@ No API key needed — uses DuckDuckGo + web fetch.
 import re
 import json
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 # ─────────────────────────────────────────────────────────────────────────────

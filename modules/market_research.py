@@ -16,7 +16,7 @@ Each card is AI-enriched with:
 
 import re, json, time, hashlib
 from datetime import datetime, timezone
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 RESEARCH_CATEGORIES = {

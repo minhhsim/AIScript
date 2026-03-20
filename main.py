@@ -307,11 +307,10 @@ Get a free key at **[console.groq.com](https://console.groq.com)** — takes 30 
 """)
     st.stop()
 
-@st.cache_resource
-def get_groq_client(_key: str):
-    return Groq(api_key=_key)
-
-client = get_groq_client(_groq_key)
+# NOTE: @st.cache_resource ignores params starting with "_" in its hash,
+# so get_groq_client(_key=...) always returned the stale empty-key client.
+# Groq() is cheap to create — just instantiate directly each run.
+client = Groq(api_key=_groq_key)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -332,7 +331,7 @@ with st.sidebar:
         "👤 Creator Analyzer":  "creator",
         "💬 Script Chat":       "chat",
     }
-    page = st.radio("", list(pages.keys()), label_visibility="collapsed")
+    page = st.radio("Navigation", list(pages.keys()), label_visibility="collapsed")
     current_page = pages[page]
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
@@ -741,7 +740,7 @@ elif current_page == "generator":
     from modules.script_generator import generate_script, EMOTIONAL_FRAMEWORKS, HOOK_TYPES, EQ_EMOTIONS
     from modules.brand_rag import query_brand_context, get_document_count
     from modules.brand_intelligence import research_brand, get_topic_research
-    from duckduckgo_search import DDGS
+    from ddgs import DDGS
 
     # Inject framework from analyzer recommendation if set
     default_fw   = st.session_state.get("pending_rewrite_framework", list(EMOTIONAL_FRAMEWORKS.keys())[0])

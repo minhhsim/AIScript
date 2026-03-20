@@ -20,7 +20,7 @@ import re, json, time, hashlib, html
 from datetime import datetime, timezone
 from typing import Optional
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # ─────────────────────────────────────────────────────────────────────────────
 HEADERS = {

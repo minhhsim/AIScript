@@ -16,7 +16,7 @@ Pattern extraction:
 
 import os, re, sys, json, shutil, subprocess, tempfile, time
 import requests
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 # ─────────────────────────────────────────────────────────────────────────────

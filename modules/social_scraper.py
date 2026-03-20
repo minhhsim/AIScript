@@ -10,7 +10,7 @@ import os
 import json
 import requests
 import subprocess
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 
 # ── TikTok Scraping ───────────────────────────────────────────────────────────
