@@ -856,11 +856,12 @@ elif current_page == "generator":
                     trend_data = ""
 
             # ── Step 5: Generate ──────────────────────────────────────────────
-            status.markdown('<div class="info-box">✍️ Generating script...</div>', unsafe_allow_html=True)
+            status.markdown('<div class="info-box">🌡️ Routing temperature · ✍️ Generating script...</div>', unsafe_allow_html=True)
             prog.progress(60)
 
             output_box  = st.empty()
             full_script = ""
+            _temp_meta  = ""
 
             try:
                 stream = generate_script(
@@ -874,7 +875,11 @@ elif current_page == "generator":
                 )
                 for chunk in stream:
                     full_script += chunk
-                    output_box.markdown(f'<div class="script-output">{full_script}▌</div>', unsafe_allow_html=True)
+                    # Stream live but hide metadata comment from display
+                    _display = full_script
+                    if "<!-- ROUTER:" in _display:
+                        _display = _display[:_display.index("<!-- ROUTER:")]
+                    output_box.markdown(f'<div class="script-output">{_display}▌</div>', unsafe_allow_html=True)
             except Exception as _gen_err:
                 _err_str = str(_gen_err)
                 if "auth" in _err_str.lower() or "401" in _err_str or "api_key" in _err_str.lower():
@@ -883,8 +888,40 @@ elif current_page == "generator":
                     st.error(f"Script generation error: {_gen_err}")
                 st.stop()
 
+            # Strip metadata comment from saved script
+            if "<!-- ROUTER:" in full_script:
+                _meta_start = full_script.index("<!-- ROUTER:")
+                _temp_meta  = full_script[_meta_start:]
+                full_script = full_script[:_meta_start].strip()
+
+            # Parse temperature band from metadata
+            _temp_val = "0.9"; _temp_band = "HIGH"; _temp_cls = "keyword_HIGH"
+            if "<!-- ROUTER:" in _temp_meta:
+                try:
+                    _parts     = _temp_meta.replace("<!-- ROUTER:","").replace("-->","").strip().split(":")
+                    _temp_val  = _parts[0].strip()
+                    _temp_band = _parts[1].strip() if len(_parts) > 1 else "HIGH"
+                    _temp_cls  = _parts[2].strip() if len(_parts) > 2 else ""
+                except Exception:
+                    pass
+
+            # Temperature badge colors
+            _band_colors = {"LOW":"#06b6d4","MEDIUM":"#f59e0b","HIGH":"#ec4899"}
+            _band_c = _band_colors.get(_temp_band, "#7c3aed")
+
             prog.progress(100); status.empty()
             output_box.markdown(f'<div class="script-output">{full_script}</div>', unsafe_allow_html=True)
+
+            # Temperature routing badge
+            st.markdown(
+                f'<div style="display:flex;gap:8px;align-items:center;margin:8px 0 4px 0">'
+                f'<span style="background:{_band_c}22;color:{_band_c};font-size:0.72rem;font-weight:700;'
+                f'padding:3px 10px;border-radius:20px;border:1px solid {_band_c}44">'
+                f'🌡️ {_temp_band} ({_temp_val})</span>'
+                f'<span style="color:#4a4a6a;font-size:0.7rem">{_temp_cls}</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
             st.session_state["last_script"] = full_script
             # Clear pending rewrite flags
             st.session_state.pop("pending_rewrite_framework","")
