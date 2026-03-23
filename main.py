@@ -2974,13 +2974,19 @@ elif current_page == "creator":
             st.warning("Enter a channel handle first.")
 
 # ════════════════════════════════════════════════════════════════════
-# PAGE: RESEARCH AGENT — Trending Video Discovery + Script Extraction
+# PAGE: RESEARCH AGENT — Auto Daily Trending + Manual Discovery
 # ════════════════════════════════════════════════════════════════════
 elif current_page == "research":
-    import requests as _req_mod
+    import time as _time_mod
+    from modules.auto_research import (
+        load_settings, save_settings, load_cache, save_cache,
+        run_auto_research, maybe_auto_refresh, should_auto_refresh,
+        add_niche, remove_niche, set_interval, set_platforms, set_enabled,
+        get_cache_age_hours, get_last_run_label,
+        CACHE_PATH, SETTINGS_PATH,
+    )
     from modules.social_trends import (
-        scrape_youtube, scrape_tiktok, scrape_reddit,
-        scrape_instagram, fetch_social_trends,
+        scrape_youtube, scrape_tiktok, scrape_reddit, scrape_instagram,
     )
     from modules.script_generator import (
         generate_script, EMOTIONAL_FRAMEWORKS, HOOK_TYPES, EQ_EMOTIONS,
@@ -2996,694 +3002,732 @@ elif current_page == "research":
     _has_yt  = bool(_yt_api_key and _yt_api_key not in ("","YOUR_YOUTUBE_KEY"))
     _has_rap = bool(_ra_key and _ra_key not in ("","YOUR_RAPIDAPI_KEY"))
 
-    # Session state
+    # ── Auto-refresh check on every page load ─────────────────────────────────
+    # Runs silently in the background if 24h (or configured interval) has passed
+    if should_auto_refresh():
+        with st.spinner("🔄 Auto-refreshing trending data..."):
+            try:
+                run_auto_research(_yt_api_key, _ra_key)
+            except Exception as _are:
+                print(f"[Auto-refresh] {_are}")
+
+    # ── Load live settings + cache ────────────────────────────────────────────
+    _ar_settings = load_settings()
+    _ar_cache    = load_cache()
+    _ar_niches   = _ar_settings.get("niches", [])
+    _ar_enabled  = _ar_settings.get("enabled", True)
+    _ar_interval = _ar_settings.get("interval_hours", 24)
+    _ar_last_lbl = _ar_settings.get("last_run_label", "Never")
+    _ar_platforms= _ar_settings.get("platforms", ["YouTube","TikTok","Reddit"])
+
+    # Session state for browse/analyse/generate flow
     for _k, _v in {
-        "tr_posts": [],          # fetched video/post results
-        "tr_topic": "",          # last searched topic
-        "tr_selected": [],       # list of selected post ids
-        "tr_analysis": {},       # {post_id: analysis dict}
-        "tr_script": "",         # generated script
-        "tr_fetching": False,
-        "tr_step": "search",     # search / browse / analyse / generate
+        "tr_posts":    [],
+        "tr_niche":    "",
+        "tr_selected": [],
+        "tr_analysis": {},
+        "tr_script":   "",
+        "tr_step":     "browse",    # browse / analyse / generate
+        "tr_manual_posts": [],
     }.items():
         if _k not in st.session_state:
             st.session_state[_k] = _v
 
-    # ── Header ────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────────
+    # HEADER
+    # ─────────────────────────────────────────────────────────────────────────
     st.markdown("# 🔍 Trending Research")
     st.markdown(
         '<p style="color:#6b6b8a;font-size:0.95rem">'
-        'Discover viral content across platforms → select videos you love → '
-        'extract their hook, frame & flow → generate your own script using their patterns.</p>',
+        'Trending content is refreshed automatically every day. '
+        'Browse, select videos you love, extract their patterns, and generate your own script.</p>',
         unsafe_allow_html=True,
     )
 
-    # ── API status ────────────────────────────────────────────────────────────
-    _api_chips = [
-        ("✓ YouTube", "#ff0000", _has_yt),
-        ("✓ TikTok",  "#000000", _has_rap),
-        ("✓ Instagram","#e1306c", _has_rap),
-        ("✓ Reddit",   "#ff4500", True),
-        ("✓ Google Trends","#4285f4", True),
-    ]
-    _chip_html = " &nbsp; ".join(
-        f'<span style="background:{"#0d0d1a" if ok else "#06060e"};color:{""+c if ok else "#2a2a3a"};'
-        f'border:1px solid {""+c+"44" if ok else "#1a1a2e"};padding:3px 10px;border-radius:20px;font-size:0.72rem">'
-        f'{"" if ok else "○ "}{label.replace("✓ ","") if not ok else label}</span>'
-        for label, c, ok in _api_chips
+    # ── Status bar ────────────────────────────────────────────────────────────
+    _niche_count = len(_ar_niches)
+    _post_count  = sum(
+        _ar_cache.get("niches", {}).get(n, {}).get("count", 0)
+        for n in _ar_niches
     )
+    _next_run_h  = max(0.0, _ar_interval - (_time_mod.time() - _ar_settings.get("last_run", 0)) / 3600)
+
+    _sb1, _sb2, _sb3, _sb4 = st.columns(4)
+    _sb1.markdown(
+        f'<div class="score-card">'
+        f'<div class="score-number" style="color:{"#10b981" if _ar_enabled else "#4a4a6a"}">'
+        f'{"ON" if _ar_enabled else "OFF"}</div>'
+        f'<div class="score-label">Auto-Refresh</div></div>',
+        unsafe_allow_html=True)
+    _sb2.markdown(
+        f'<div class="score-card"><div class="score-number" style="color:#7c3aed">{_niche_count}</div>'
+        f'<div class="score-label">Tracked Niches</div></div>',
+        unsafe_allow_html=True)
+    _sb3.markdown(
+        f'<div class="score-card"><div class="score-number" style="color:#06b6d4">{_post_count}</div>'
+        f'<div class="score-label">Videos Cached</div></div>',
+        unsafe_allow_html=True)
+    _sb4.markdown(
+        f'<div class="score-card"><div class="score-number" style="color:#f59e0b;font-size:0.85rem">'
+        f'{f"{_next_run_h:.0f}h" if _next_run_h > 0 else "Due now"}</div>'
+        f'<div class="score-label">Next Refresh</div></div>',
+        unsafe_allow_html=True)
+
     st.markdown(
         f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;'
-        f'padding:8px 14px;margin-bottom:12px">{_chip_html}</div>',
+        f'padding:7px 14px;margin:8px 0;font-size:0.78rem;color:#6b6b8a;'
+        f'display:flex;justify-content:space-between;align-items:center">'
+        f'<span>🕐 Last refresh: <strong style="color:#9090b0">{_ar_last_lbl}</strong></span>'
+        f'<span>Interval: every <strong style="color:#9090b0">{_ar_interval}h</strong> · '
+        f'Platforms: <strong style="color:#9090b0">{", ".join(_ar_platforms)}</strong></span>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
-    # ── Step indicator ────────────────────────────────────────────────────────
-    _STEPS = [
-        ("🔍","Search","search"),
-        ("🎬","Browse & Select","browse"),
-        ("🧠","Extract Patterns","analyse"),
-        ("✍️","Generate Script","generate"),
-    ]
-    _cur_step = st.session_state["tr_step"]
-    _step_cols = st.columns(4)
-    for _si2, (_sico, _snm, _sid) in enumerate(_STEPS):
-        _steps_order = ["search","browse","analyse","generate"]
-        _is_cur2 = _cur_step == _sid
-        _is_done2= _steps_order.index(_cur_step) > _steps_order.index(_sid)
-        _sc3 = "#10b981" if _is_done2 else "#7c3aed" if _is_cur2 else "#2a2a3a"
-        _step_cols[_si2].markdown(
-            f'<div style="background:{_sc3}22;border:1px solid {_sc3};border-radius:10px;'
-            f'padding:8px;text-align:center">'
-            f'<div style="font-size:1rem">{"✓" if _is_done2 else _sico}</div>'
-            f'<div style="color:{"#10b981" if _is_done2 else "#e8e8f0" if _is_cur2 else "#4a4a6a"};'
-            f'font-size:0.68rem;font-weight:600">{_snm}</div>'
-            f'</div>', unsafe_allow_html=True,
-        )
-    st.markdown("")
+    # ── Main tabs ─────────────────────────────────────────────────────────────
+    _tab_browse, _tab_discover, _tab_settings = st.tabs([
+        "📺 Daily Feed",
+        "🔍 Search & Discover",
+        "⚙️ Auto-Refresh Settings",
+    ])
 
     # ══════════════════════════════════════════════════════════════════════════
-    # STEP 1 — SEARCH
+    # TAB 1 — DAILY FEED (auto-researched content)
     # ══════════════════════════════════════════════════════════════════════════
-    if _cur_step == "search":
-        st.markdown("### 🔍 What are you researching?")
+    with _tab_browse:
+        if not _ar_niches:
+            st.info("No niches configured. Add niches in ⚙️ Auto-Refresh Settings.")
+        else:
+            # Niche selector + manual refresh
+            _dh1, _dh2 = st.columns([4, 1])
+            _active_niche = _dh1.selectbox(
+                "Niche",
+                _ar_niches,
+                key="daily_niche_sel",
+                label_visibility="collapsed",
+            )
+            if _dh2.button("🔄 Refresh Now", key="manual_refresh_btn"):
+                _prog_ref = st.progress(0)
+                _stat_ref = st.empty()
+                def _ref_cb(pct, msg):
+                    _prog_ref.progress(pct, text=msg)
+                    _stat_ref.markdown(f'<div class="info-box">{msg}</div>', unsafe_allow_html=True)
+                run_auto_research(_yt_api_key, _ra_key, _ref_cb)
+                _ar_cache = load_cache()
+                _ar_settings = load_settings()
+                _ar_last_lbl = _ar_settings.get("last_run_label", "Never")
+                _prog_ref.progress(100)
+                _stat_ref.empty()
+                st.success("✅ Refresh complete!")
+                st.rerun()
 
-        _sc1, _sc2 = st.columns([3, 1])
-        _tr_topic_input = _sc1.text_input(
-            "Topic, niche, or keyword",
-            placeholder="e.g. car dealership tips, skincare routine, gym motivation, meal prep...",
-            label_visibility="collapsed",
-            key="tr_topic_input",
-        )
-        _tr_platforms = st.multiselect(
-            "Platforms to search",
-            ["YouTube", "TikTok", "Instagram", "Reddit"],
-            default=["YouTube", "TikTok", "Reddit"],
-            key="tr_platforms",
-        )
-        _tc1, _tc2 = st.columns(2)
-        _tr_max = _tc1.slider("Results per platform", 5, 20, 10, key="tr_max")
-        _tr_sort = _tc2.selectbox("Sort by", ["Most Viral", "Most Recent", "Most Engaging"], key="tr_sort")
+            # Load cached posts for selected niche
+            _niche_data = _ar_cache.get("niches", {}).get(_active_niche, {})
+            _niche_posts = _niche_data.get("posts", [])
+            _niche_time  = _niche_data.get("fetched_label", "Not yet fetched")
+            _niche_count2= len(_niche_posts)
 
-        st.markdown("")
-        _search_btn = st.button(
-            "🚀 Fetch Trending Content",
-            type="primary", use_container_width=True, key="tr_search_btn",
-            disabled=not bool(_tr_topic_input.strip() if "_tr_topic_input" in dir() else False),
-        )
+            if not _niche_posts:
+                st.markdown(
+                    f'<div class="warn-box">No data yet for <strong>{_active_niche}</strong>. '
+                    f'Click 🔄 Refresh Now or wait for the next auto-refresh.</div>',
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div style="color:#6b6b8a;font-size:0.75rem;margin-bottom:10px">'
+                    f'📡 {_niche_count2} videos · fetched {_niche_time}</div>',
+                    unsafe_allow_html=True)
 
-        if _search_btn and _tr_topic_input.strip():
-            st.session_state["tr_topic"]    = _tr_topic_input.strip()
-            st.session_state["tr_posts"]    = []
-            st.session_state["tr_selected"] = []
-            st.session_state["tr_analysis"] = {}
-            st.session_state["tr_script"]   = ""
+                # Platform filter
+                _dp_plats = ["All"] + sorted(set(p.get("platform","") for p in _niche_posts if p.get("platform")))
+                _dpf_cols = st.columns(len(_dp_plats))
+                _dp_filter = st.session_state.get("daily_plat_filter", "All")
+                for _dpi, _dpn in enumerate(_dp_plats):
+                    _dpc = {"YouTube":"#ff0000","TikTok":"#1d9bf0","Instagram":"#e1306c","Reddit":"#ff4500"}.get(_dpn,"#7c3aed")
+                    if _dpf_cols[_dpi].button(
+                        _dpn, key=f"dpf_{_dpi}",
+                        type="primary" if _dp_filter == _dpn else "secondary"
+                    ):
+                        st.session_state["daily_plat_filter"] = _dpn; st.rerun()
 
-            _all_posts = []
-            _fetch_prog = st.progress(0)
-            _fetch_stat = st.empty()
-            _plat_list  = st.session_state.get("tr_platforms", ["YouTube","TikTok","Reddit"])
-            _n_plats    = len(_plat_list)
+                st.markdown("")
+                _dp_filtered = [p for p in _niche_posts if _dp_filter == "All" or p.get("platform") == _dp_filter]
 
-            for _pi, _plat in enumerate(_plat_list):
-                _fetch_stat.markdown(
-                    f'<div class="info-box">Fetching <strong>{_plat}</strong> ({_pi+1}/{_n_plats})...</div>',
+                # Selection state
+                _selected = st.session_state["tr_selected"]
+                _n_sel    = len(_selected)
+
+                if _n_sel > 0:
+                    _sel_bg_d = "#0d1a0d"; _sel_brd_d = "#10b981"; _sel_clr_d = "#10b981"
+                    _sel_msg_d = f"✓ {_n_sel} video{'s' if _n_sel!=1 else ''} selected"
+                else:
+                    _sel_bg_d = "#0a0a14"; _sel_brd_d = "#1e1e30"; _sel_clr_d = "#6b6b8a"
+                    _sel_msg_d = "Select videos to extract their patterns"
+
+                _hint_d = '<span style="color:#6b6b8a;font-size:0.72rem">Select 1-5 for best results</span>' if _n_sel > 0 else ""
+                st.markdown(
+                    f'<div style="background:{_sel_bg_d};border:1px solid {_sel_brd_d};"'
+                    f'border-radius:8px;padding:7px 14px;margin-bottom:10px;'
+                    f'display:flex;justify-content:space-between;align-items:center">'
+                    f'<span style="color:{_sel_clr_d};font-size:0.85rem">{_sel_msg_d}</span>'
+                    f'{_hint_d}</div>',
                     unsafe_allow_html=True,
                 )
-                _fetch_prog.progress(int(_pi / _n_plats * 100))
-                try:
-                    if _plat == "YouTube":
-                        _posts = scrape_youtube(_tr_topic_input.strip(), _yt_api_key, _tr_max)
-                    elif _plat == "TikTok":
-                        _posts = scrape_tiktok(_tr_topic_input.strip(), _ra_key, _tr_max)
-                    elif _plat == "Instagram":
-                        _posts = scrape_instagram(_tr_topic_input.strip(), _ra_key, _tr_max)
-                    elif _plat == "Reddit":
-                        _posts = scrape_reddit(_tr_topic_input.strip(), _tr_max)
-                    else:
-                        _posts = []
-                    _all_posts.extend(_posts)
-                except Exception as _fe:
-                    st.warning(f"{_plat}: {_fe}")
 
-            # Sort
-            if _tr_sort == "Most Viral":
-                _all_posts.sort(key=lambda x: x.get("views",0) + x.get("likes",0)*10, reverse=True)
-            elif _tr_sort == "Most Recent":
-                _all_posts.sort(key=lambda x: x.get("date",""), reverse=True)
-            elif _tr_sort == "Most Engaging":
-                _all_posts.sort(key=lambda x: x.get("likes",0) + x.get("comments",0)*5, reverse=True)
+                # Thumbnail grid
+                _PLAT_C2 = {"YouTube":"#ff0000","TikTok":"#1d9bf0","Instagram":"#e1306c","Reddit":"#ff4500"}
+                _PLAT_I2 = {"YouTube":"▶","TikTok":"♪","Instagram":"◈","Reddit":"●"}
 
-            _fetch_prog.progress(100)
-            _fetch_stat.empty()
-            st.session_state["tr_posts"] = _all_posts
-            st.session_state["tr_step"]  = "browse"
-            st.rerun()
+                def _fmt2(n):
+                    n = int(n or 0)
+                    return f"{n/1e6:.1f}M" if n>=1e6 else f"{n/1e3:.0f}K" if n>=1e3 else str(n)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # STEP 2 — BROWSE & SELECT
-    # ══════════════════════════════════════════════════════════════════════════
-    elif _cur_step == "browse":
-        _posts     = st.session_state["tr_posts"]
-        _selected  = st.session_state["tr_selected"]
-        _topic_lbl = st.session_state.get("tr_topic","")
+                for _row_i in range(0, len(_dp_filtered), 3):
+                    _row_p = _dp_filtered[_row_i: _row_i+3]
+                    _gcols = st.columns(3)
+                    for _ci, _post in enumerate(_row_p):
+                        _pid    = _post.get("post_id","") or _post.get("url","")
+                        _ptitle = _post.get("title","")[:75]
+                        _pplat  = _post.get("platform","")
+                        _purl   = _post.get("url","")
+                        _pviews = _post.get("views",0)
+                        _plikes = _post.get("likes",0)
+                        _pcomm  = _post.get("comments",0)
+                        _pauth  = _post.get("author","")[:28]
+                        _pago   = _post.get("time_ago","")
+                        _pviral = _post.get("is_viral", False)
+                        _pthumb = (_post.get("raw",{}) or {}).get("thumbnail","")
+                        _ppc2   = _PLAT_C2.get(_pplat,"#7c3aed")
+                        _ppico2 = _PLAT_I2.get(_pplat,"●")
+                        _is_sel = _pid in _selected
 
-        _bh1, _bh2 = st.columns([4,1])
-        _bh1.markdown(f"### 🎬 {len(_posts)} results for **{_topic_lbl}**")
-        if _bh2.button("🔍 New Search", key="tr_new_search"):
-            st.session_state["tr_step"] = "search"; st.rerun()
-
-        # Selection counter
-        _n_sel = len(_selected)
-        _sel_bg2    = "#0d1a0d" if _n_sel > 0 else "#0a0a14"
-        _sel_brd2   = "#10b981" if _n_sel > 0 else "#1e1e30"
-        _sel_clr2   = "#10b981" if _n_sel > 0 else "#6b6b8a"
-        _sel_msg    = f"✓ {_n_sel} video{'s' if _n_sel!=1 else ''} selected" if _n_sel > 0 else "Select videos to extract their script patterns"
-        _sel_hint   = '<span style="color:#6b6b8a;font-size:0.75rem">Select 1-5 for best results</span>' if _n_sel > 0 else ""
-        st.markdown(
-            f'<div style="background:{_sel_bg2};border:1px solid {_sel_brd2};'
-            f'border-radius:8px;padding:8px 14px;margin-bottom:12px;'
-            f'display:flex;justify-content:space-between;align-items:center">'
-            f'<span style="color:{_sel_clr2};font-size:0.85rem">{_sel_msg}</span>'
-            f'{_sel_hint}</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Platform filter
-        _plat_filter_opts = ["All"] + sorted(set(p.get("platform","") for p in _posts if p.get("platform")))
-        _pf_cols = st.columns(len(_plat_filter_opts))
-        _active_filter = st.session_state.get("tr_plat_filter","All")
-        for _pfi, _pfn in enumerate(_plat_filter_opts):
-            _pf_active = (_active_filter == _pfn)
-            _pfc = {"YouTube":"#ff0000","TikTok":"#1d9bf0","Instagram":"#e1306c",
-                    "Reddit":"#ff4500","Facebook":"#1877f2"}.get(_pfn,"#7c3aed")
-            if _pf_cols[_pfi].button(
-                _pfn, key=f"tr_pf_{_pfi}",
-                type="primary" if _pf_active else "secondary",
-            ):
-                st.session_state["tr_plat_filter"] = _pfn; st.rerun()
-
-        st.markdown("")
-
-        # Filter posts
-        _filtered = [p for p in _posts if _active_filter == "All" or p.get("platform") == _active_filter]
-
-        if not _filtered:
-            st.info("No results found. Try a different topic or add API keys for more platforms.")
-        else:
-            # Thumbnail grid — 3 columns
-            _PLAT_COLORS = {
-                "YouTube":"#ff0000","TikTok":"#1d9bf0","Instagram":"#e1306c",
-                "Reddit":"#ff4500","Facebook":"#1877f2","Twitter/X":"#1da1f2",
-            }
-            _PLAT_ICONS = {
-                "YouTube":"▶","TikTok":"♪","Instagram":"◈",
-                "Reddit":"●","Facebook":"f","Twitter/X":"𝕏",
-            }
-
-            _cols_per_row = 3
-            for _row_i in range(0, len(_filtered), _cols_per_row):
-                _row_posts = _filtered[_row_i: _row_i + _cols_per_row]
-                _grid_cols = st.columns(_cols_per_row)
-
-                for _ci2, _post in enumerate(_row_posts):
-                    _pid      = _post.get("post_id","") or _post.get("url","")
-                    _ptitle   = _post.get("title","")[:80]
-                    _pplat    = _post.get("platform","")
-                    _purl     = _post.get("url","")
-                    _pviews   = _post.get("views",0)
-                    _plikes   = _post.get("likes",0)
-                    _pcomm    = _post.get("comments",0)
-                    _pauthor  = _post.get("author","")[:30]
-                    _pago     = _post.get("time_ago","")
-                    _pviral   = _post.get("is_viral", False)
-                    _pthumb   = (_post.get("raw",{}) or {}).get("thumbnail","")
-                    _ppc      = _PLAT_COLORS.get(_pplat,"#7c3aed")
-                    _ppico    = _PLAT_ICONS.get(_pplat,"●")
-                    _is_sel2  = _pid in _selected
-
-                    def _fmt(n):
-                        n = int(n or 0)
-                        return f"{n/1e6:.1f}M" if n>=1e6 else f"{n/1e3:.0f}K" if n>=1e3 else str(n)
-
-                    with _grid_cols[_ci2]:
-                        # Thumbnail card
-                        _thumb_html = (
-                            f'<img src="{_pthumb}" style="width:100%;height:140px;object-fit:cover;border-radius:8px 8px 0 0">'
+                        _thumb2 = (
+                            f'<img src="{_pthumb}" style="width:100%;height:130px;object-fit:cover;border-radius:8px 8px 0 0">'
                             if _pthumb else
-                            f'<div style="width:100%;height:140px;background:#0d0d1a;border-radius:8px 8px 0 0;'
-                            f'display:flex;align-items:center;justify-content:center;font-size:2.5rem;color:{_ppc}44">{_ppico}</div>'
+                            f'<div style="width:100%;height:130px;background:#0d0d1a;border-radius:8px 8px 0 0;'
+                            f'display:flex;align-items:center;justify-content:center;font-size:2rem;color:{_ppc2}44">{_ppico2}</div>'
                         )
-                        _sel_border = f"2px solid #10b981" if _is_sel2 else f"1px solid #1e1e30"
-                        _sel_bg     = "#0d1a0d" if _is_sel2 else "#0d0d1a"
-                        _viral_badge = '<span style="background:#ef444422;color:#ef4444;font-size:0.6rem;padding:2px 6px;border-radius:10px;font-weight:700">🔥 VIRAL</span>' if _pviral else ""
+                        _vbadge2 = '<span style="background:#ef444422;color:#ef4444;font-size:0.6rem;padding:2px 5px;border-radius:10px;font-weight:700">🔥</span>' if _pviral else ""
+                        _sbadge2 = '<span style="color:#10b981;font-size:0.65rem">✓</span>' if _is_sel else ""
+                        _vspan2  = f'<span style="color:#6b6b8a;font-size:0.65rem">👁 {_fmt2(_pviews)}</span>' if _pviews else ""
+                        _lspan2  = f'<span style="color:#6b6b8a;font-size:0.65rem">❤ {_fmt2(_plikes)}</span>' if _plikes else ""
+                        _cspan2  = f'<span style="color:#6b6b8a;font-size:0.65rem">💬 {_fmt2(_pcomm)}</span>' if _pcomm else ""
+                        _ago2    = f" · {_pago}" if _pago else ""
+                        _sel_brd2 = f"2px solid #10b981" if _is_sel else f"1px solid #1e1e30"
+                        _sel_bg2  = "#0d1a0d" if _is_sel else "#0d0d1a"
 
-                        _sel_badge   = '<span style="color:#10b981;font-size:0.7rem">✓ Selected</span>' if _is_sel2 else ""
-                        _views_span  = f'<span style="color:#6b6b8a;font-size:0.68rem">👁 {_fmt(_pviews)}</span>' if _pviews else ""
-                        _likes_span  = f'<span style="color:#6b6b8a;font-size:0.68rem">❤ {_fmt(_plikes)}</span>' if _plikes else ""
-                        _comm_span   = f'<span style="color:#6b6b8a;font-size:0.68rem">💬 {_fmt(_pcomm)}</span>' if _pcomm else ""
-                        _ago_part    = f" · {_pago}" if _pago else ""
-                        _card_html   = (
-                            f'<div style="background:{_sel_bg};border:{_sel_border};border-radius:10px;overflow:hidden;margin-bottom:4px">'
-                            f'{_thumb_html}'
-                            f'<div style="padding:8px 10px 4px 10px">'
-                            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
-                            f'<span style="background:{_ppc}22;color:{_ppc};font-size:0.62rem;font-weight:700;padding:2px 6px;border-radius:10px">{_ppico} {_pplat}</span>'
-                            f'{_viral_badge}{_sel_badge}'
-                            f'</div>'
-                            f'<p style="color:#e8e8f0;font-size:0.8rem;font-weight:600;margin:0 0 4px 0;line-height:1.3">{_ptitle}</p>'
-                            f'<p style="color:#4a4a6a;font-size:0.68rem;margin:0 0 4px 0">{_pauthor}{_ago_part}</p>'
-                            f'<div style="display:flex;gap:8px">{_views_span}{_likes_span}{_comm_span}</div>'
-                            f'</div></div>'
-                        )
-                        st.markdown(_card_html, unsafe_allow_html=True)
-
-                        # Action buttons
-                        _btn_c1, _btn_c2 = st.columns(2)
-                        if _purl:
-                            _btn_c1.markdown(
-                                f'<a href="{_purl}" target="_blank" style="display:block;text-align:center;'
-                                f'background:#1a1a2e;color:#9090b0;border:1px solid #2a2a3e;border-radius:6px;'
-                                f'padding:5px;font-size:0.72rem;text-decoration:none;margin-top:2px">▶ Watch</a>',
+                        with _gcols[_ci]:
+                            st.markdown(
+                                f'<div style="background:{_sel_bg2};border:{_sel_brd2};border-radius:10px;overflow:hidden;margin-bottom:4px">'
+                                f'{_thumb2}'
+                                f'<div style="padding:7px 9px 5px 9px">'
+                                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
+                                f'<span style="background:{_ppc2}22;color:{_ppc2};font-size:0.6rem;font-weight:700;padding:2px 5px;border-radius:10px">{_ppico2} {_pplat}</span>'
+                                f'<span style="display:flex;gap:4px">{_vbadge2}{_sbadge2}</span>'
+                                f'</div>'
+                                f'<p style="color:#e8e8f0;font-size:0.78rem;font-weight:600;margin:0 0 3px 0;line-height:1.3">{_ptitle}</p>'
+                                f'<p style="color:#4a4a6a;font-size:0.65rem;margin:0 0 3px 0">{_pauth}{_ago2}</p>'
+                                f'<div style="display:flex;gap:6px">{_vspan2}{_lspan2}{_cspan2}</div>'
+                                f'</div></div>',
                                 unsafe_allow_html=True,
                             )
-                        _sel_label = "✓ Selected" if _is_sel2 else "+ Select"
-                        _sel_type  = "primary" if not _is_sel2 else "secondary"
-                        if _btn_c2.button(_sel_label, key=f"tr_sel_{_pid}", type=_sel_type):
-                            if _is_sel2:
-                                st.session_state["tr_selected"].remove(_pid)
+                            _bc1, _bc2 = st.columns(2)
+                            if _purl:
+                                _bc1.markdown(
+                                    f'<a href="{_purl}" target="_blank" style="display:block;text-align:center;'
+                                    f'background:#1a1a2e;color:#9090b0;border:1px solid #2a2a3e;border-radius:6px;'
+                                    f'padding:5px;font-size:0.68rem;text-decoration:none">▶ Watch</a>',
+                                    unsafe_allow_html=True,
+                                )
+                            _sl2 = "✓ Remove" if _is_sel else "+ Select"
+                            _st2 = "secondary" if _is_sel else "primary"
+                            if _bc2.button(_sl2, key=f"ds_{_pid}", type=_st2):
+                                if _is_sel:
+                                    st.session_state["tr_selected"].remove(_pid)
+                                else:
+                                    if len(st.session_state["tr_selected"]) < 5:
+                                        st.session_state["tr_selected"].append(_pid)
+                                        st.session_state[f"tr_post_{_pid}"] = _post
+                                st.rerun()
+
+                # Proceed to extract
+                if _n_sel > 0:
+                    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                    _pc1, _pc2 = st.columns([3,1])
+                    _pc1.markdown(
+                        f'<div class="info-box" style="border-color:#10b981">'
+                        f'✓ <strong>{_n_sel} video{"s" if _n_sel!=1 else ""} selected</strong> — ready to extract patterns</div>',
+                        unsafe_allow_html=True,
+                    )
+                    if _pc2.button("🧠 Extract Patterns →", type="primary", key="daily_go_analyse"):
+                        st.session_state["tr_step"] = "analyse"; st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 2 — MANUAL SEARCH & DISCOVER
+    # ══════════════════════════════════════════════════════════════════════════
+    with _tab_discover:
+        st.markdown("### 🔍 Search Any Topic")
+        st.markdown('<p style="color:#6b6b8a;font-size:0.85rem">Search a specific topic beyond your tracked niches.</p>', unsafe_allow_html=True)
+
+        _sc1, _sc2 = st.columns([3,1])
+        _man_topic = _sc1.text_input(
+            "Topic to search",
+            placeholder="e.g. gym motivation, car wash tips, keto recipes...",
+            label_visibility="collapsed",
+            key="manual_topic_input",
+        )
+        _man_plats = st.multiselect(
+            "Platforms",
+            ["YouTube","TikTok","Instagram","Reddit"],
+            default=["YouTube","TikTok","Reddit"],
+            key="man_plats",
+        )
+        _mc1, _mc2 = st.columns(2)
+        _man_max  = _mc1.slider("Results per platform", 5, 20, 10, key="man_max")
+        _man_sort = _mc2.selectbox("Sort by", ["Most Viral","Most Engaging","Most Recent"], key="man_sort")
+
+        st.markdown("")
+        _man_btn = st.button("🔍 Search Now", type="primary", use_container_width=True, key="man_search",
+                              disabled=not bool(_man_topic.strip() if "_man_topic" in dir() else False))
+
+        if _man_btn and _man_topic.strip():
+            _man_posts_all = []
+            _man_prog = st.progress(0)
+            _man_stat = st.empty()
+            for _mpi, _mplat in enumerate(_man_plats):
+                _man_stat.markdown(f'<div class="info-box">Fetching {_mplat} ({_mpi+1}/{len(_man_plats)})...</div>', unsafe_allow_html=True)
+                _man_prog.progress(int(_mpi/len(_man_plats)*100))
+                try:
+                    if _mplat == "YouTube":   _mp = scrape_youtube(_man_topic.strip(), _yt_api_key, _man_max)
+                    elif _mplat == "TikTok":  _mp = scrape_tiktok(_man_topic.strip(), _ra_key, _man_max)
+                    elif _mplat == "Instagram":_mp = scrape_instagram(_man_topic.strip(), _ra_key, _man_max)
+                    elif _mplat == "Reddit":  _mp = scrape_reddit(_man_topic.strip(), _man_max)
+                    else: _mp = []
+                    _man_posts_all.extend(_mp)
+                except Exception as _me: st.warning(f"{_mplat}: {_me}")
+            if _man_sort == "Most Viral": _man_posts_all.sort(key=lambda x: x.get("views",0)+x.get("likes",0)*10, reverse=True)
+            elif _man_sort == "Most Engaging": _man_posts_all.sort(key=lambda x: x.get("likes",0)+x.get("comments",0)*5, reverse=True)
+            elif _man_sort == "Most Recent": _man_posts_all.sort(key=lambda x: x.get("date",""), reverse=True)
+            _man_prog.progress(100); _man_stat.empty()
+            st.session_state["tr_manual_posts"] = _man_posts_all
+            st.session_state["tr_niche"] = _man_topic.strip()
+            st.rerun()
+
+        _man_posts_disp = st.session_state.get("tr_manual_posts", [])
+        if _man_posts_disp:
+            st.markdown(f"**{len(_man_posts_disp)} results for:** `{st.session_state.get('tr_niche','')}`")
+            _selected = st.session_state["tr_selected"]
+
+            def _fmt3(n):
+                n = int(n or 0)
+                return f"{n/1e6:.1f}M" if n>=1e6 else f"{n/1e3:.0f}K" if n>=1e3 else str(n)
+
+            _PLAT_C3 = {"YouTube":"#ff0000","TikTok":"#1d9bf0","Instagram":"#e1306c","Reddit":"#ff4500"}
+            _PLAT_I3 = {"YouTube":"▶","TikTok":"♪","Instagram":"◈","Reddit":"●"}
+
+            for _row_i in range(0, len(_man_posts_disp), 3):
+                _row_p3 = _man_posts_disp[_row_i:_row_i+3]
+                _gcols3 = st.columns(3)
+                for _ci3, _post3 in enumerate(_row_p3):
+                    _pid3   = _post3.get("post_id","") or _post3.get("url","")
+                    _pt3    = _post3.get("title","")[:75]
+                    _pp3    = _post3.get("platform","")
+                    _pu3    = _post3.get("url","")
+                    _ppc3   = _PLAT_C3.get(_pp3,"#7c3aed")
+                    _ppico3 = _PLAT_I3.get(_pp3,"●")
+                    _is_sel3= _pid3 in _selected
+                    _pthumb3= (_post3.get("raw",{}) or {}).get("thumbnail","")
+                    _thumb3 = (
+                        f'<img src="{_pthumb3}" style="width:100%;height:130px;object-fit:cover;border-radius:8px 8px 0 0">'
+                        if _pthumb3 else
+                        f'<div style="width:100%;height:130px;background:#0d0d1a;border-radius:8px 8px 0 0;'
+                        f'display:flex;align-items:center;justify-content:center;font-size:2rem;color:{_ppc3}44">{_ppico3}</div>'
+                    )
+                    _v3  = _fmt3(_post3.get("views",0)); _l3 = _fmt3(_post3.get("likes",0)); _c3 = _fmt3(_post3.get("comments",0))
+                    _vsp3 = f'<span style="color:#6b6b8a;font-size:0.65rem">👁 {_v3}</span>' if _post3.get("views") else ""
+                    _lsp3 = f'<span style="color:#6b6b8a;font-size:0.65rem">❤ {_l3}</span>' if _post3.get("likes") else ""
+                    _csp3 = f'<span style="color:#6b6b8a;font-size:0.65rem">💬 {_c3}</span>' if _post3.get("comments") else ""
+                    _sb3b = "2px solid #10b981" if _is_sel3 else "1px solid #1e1e30"
+                    _bg3  = "#0d1a0d" if _is_sel3 else "#0d0d1a"
+
+                    with _gcols3[_ci3]:
+                        _sbadge3 = '<span style="color:#10b981;font-size:0.65rem;margin-left:6px">✓</span>' if _is_sel3 else ""
+                        st.markdown(
+                            f'<div style="background:{_bg3};border:{_sb3b};border-radius:10px;overflow:hidden;margin-bottom:4px">'
+                            f'{_thumb3}'
+                            f'<div style="padding:7px 9px 5px 9px">'
+                            f'<span style="background:{_ppc3}22;color:{_ppc3};font-size:0.6rem;font-weight:700;padding:2px 5px;border-radius:10px">{_ppico3} {_pp3}</span>'
+                            f'{_sbadge3}'
+                            f'<p style="color:#e8e8f0;font-size:0.78rem;font-weight:600;margin:4px 0 3px 0;line-height:1.3">{_pt3}</p>'
+                            f'<div style="display:flex;gap:6px">{_vsp3}{_lsp3}{_csp3}</div>'
+                            f'</div></div>',
+                            unsafe_allow_html=True,
+                        )
+                        _bc3a, _bc3b = st.columns(2)
+                        if _pu3:
+                            _bc3a.markdown(
+                                f'<a href="{_pu3}" target="_blank" style="display:block;text-align:center;'
+                                f'background:#1a1a2e;color:#9090b0;border:1px solid #2a2a3e;border-radius:6px;'
+                                f'padding:5px;font-size:0.68rem;text-decoration:none">▶ Watch</a>',
+                                unsafe_allow_html=True,
+                            )
+                        _sl3 = "✓ Remove" if _is_sel3 else "+ Select"
+                        _st3 = "secondary" if _is_sel3 else "primary"
+                        if _bc3b.button(_sl3, key=f"ms_{_pid3}", type=_st3):
+                            if _is_sel3:
+                                st.session_state["tr_selected"].remove(_pid3)
                             else:
                                 if len(st.session_state["tr_selected"]) < 5:
-                                    st.session_state["tr_selected"].append(_pid)
-                                    # Store post data for analysis
-                                    st.session_state[f"tr_post_{_pid}"] = _post
+                                    st.session_state["tr_selected"].append(_pid3)
+                                    st.session_state[f"tr_post_{_pid3}"] = _post3
                             st.rerun()
 
-        st.markdown("")
-        # Proceed button
-        if _n_sel > 0:
-            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-            _pc1, _pc2 = st.columns([2,1])
-            _pc1.markdown(
-                f'<div class="info-box" style="border-color:#10b981">'
-                f'✓ <strong>{_n_sel} video{"s" if _n_sel!=1 else ""} selected</strong> — '
-                f'ready to extract hook, frame & flow patterns</div>',
-                unsafe_allow_html=True,
-            )
-            if _pc2.button("🧠 Extract Patterns →", type="primary", key="tr_go_analyse"):
-                st.session_state["tr_step"] = "analyse"; st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STEP 3 — EXTRACT PATTERNS
-    # ══════════════════════════════════════════════════════════════════════════
-    elif _cur_step == "analyse":
-        _selected  = st.session_state["tr_selected"]
-        _analysis  = st.session_state["tr_analysis"]
-
-        st.markdown("### 🧠 Extracting Script Patterns")
-        st.markdown(
-            '<p style="color:#6b6b8a;font-size:0.85rem">'
-            'AI is analysing hook technique, content framework, emotional arc, '
-            'and pacing from each selected video.</p>',
-            unsafe_allow_html=True,
-        )
-
-        # Run analysis if not done
-        if not _analysis:
-            _an_prog = st.progress(0)
-            _an_stat = st.empty()
-            _results = {}
-
-            for _ai2, _pid in enumerate(_selected):
-                _post = st.session_state.get(f"tr_post_{_pid}", {})
-                _ptitle  = _post.get("title","")
-                _pbody   = _post.get("body","")
-                _pplat   = _post.get("platform","")
-                _pviews  = _post.get("views",0)
-                _plikes  = _post.get("likes",0)
-
-                _an_stat.markdown(
-                    f'<div class="info-box">🧠 Analysing {_ai2+1}/{len(_selected)}: <strong>{_ptitle[:60]}</strong></div>',
+            if len(st.session_state["tr_selected"]) > 0:
+                st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+                _mdc1, _mdc2 = st.columns([3,1])
+                _n_sel3 = len(st.session_state["tr_selected"])
+                _mdc1.markdown(
+                    f'<div class="info-box" style="border-color:#10b981">✓ <strong>{_n_sel3} selected</strong> — ready to extract patterns</div>',
                     unsafe_allow_html=True,
                 )
-                _an_prog.progress(int(_ai2 / len(_selected) * 100))
+                if _mdc2.button("🧠 Extract Patterns →", type="primary", key="man_go_analyse"):
+                    st.session_state["tr_step"] = "analyse"; st.rerun()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # EXTRACT + GENERATE FLOW (shown below tabs when step is analyse/generate)
+    # ══════════════════════════════════════════════════════════════════════════
+    _tr_step = st.session_state["tr_step"]
+    _selected = st.session_state["tr_selected"]
+
+    if _tr_step in ("analyse","generate") and _selected:
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+        # ── EXTRACT PATTERNS ─────────────────────────────────────────────────
+        st.markdown("## 🧠 Pattern Extraction")
+        _analysis = st.session_state["tr_analysis"]
+
+        if not _analysis:
+            _an_prog2 = st.progress(0)
+            _an_stat2 = st.empty()
+            _results2 = {}
+            import json as _json2, re as _re2
+            for _ai2, _pid2 in enumerate(_selected):
+                _post2   = st.session_state.get(f"tr_post_{_pid2}", {})
+                _ptitle2 = _post2.get("title","Unknown")
+                _an_stat2.markdown(
+                    f'<div class="info-box">🧠 Analysing {_ai2+1}/{len(_selected)}: <strong>{_ptitle2[:55]}</strong></div>',
+                    unsafe_allow_html=True,
+                )
+                _an_prog2.progress(int(_ai2 / len(_selected) * 100))
                 try:
-                    _resp = client.chat.completions.create(
+                    _resp2 = client.chat.completions.create(
                         model="llama-3.3-70b-versatile",
                         messages=[
-                            {
-                                "role": "system",
-                                "content": (
-                                    "You are a viral content strategist who reverse-engineers "
-                                    "why videos go viral. Extract the exact framework, hook, "
-                                    "and script structure from the title and description. "
-                                    "Be specific and actionable — a writer must be able to "
-                                    "recreate this pattern in their own niche. "
-                                    "Return ONLY valid JSON."
-                                ),
-                            },
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"Platform: {_pplat}\n"
-                                    f"Title: {_ptitle}\n"
-                                    f"Description: {_pbody[:400]}\n"
-                                    f"Views: {_pviews:,} | Likes: {_plikes:,}\n\n"
-                                    f"Reverse-engineer this video. Return JSON:\n"
-                                    f"{{"
-                                    f'"hook_technique": "exact hook type used (e.g. Pattern Interrupt, Curiosity Gap, Story Drop)",'
-                                    f'"hook_text_pattern": "the structural template of the opening (e.g. \'[Controversial claim] — here\'s the proof\')",'
-                                    f'"content_framework": "Hero\'s Journey / PAS / AIDA / Listicle / Contrast Arc / etc",'
-                                    f'"emotional_arc": "emotion at start → emotion at peak → emotion at end",'
-                                    f'"pacing": "fast/medium/slow with sentence rhythm notes",'
-                                    f'"why_it_works": "1-2 sentences on the psychological mechanism",'
-                                    f'"script_flow": ["beat 1 description", "beat 2", "beat 3", "beat 4", "CTA beat"],'
-                                    f'"reusable_template": "Fill-in-the-blank template a creator can adapt: \'[X] that [Y] — here\'s why [Z]\'",'
-                                    f'"platform_signals": "what makes this feel native to {_pplat}",'
-                                    f'"tone": "one word tone descriptor"'
-                                    f"}}"
-                                ),
-                            },
+                            {"role":"system","content":(
+                                "You are a viral content strategist who reverse-engineers why videos go viral. "
+                                "Extract the exact framework, hook, and script structure. Be specific and actionable. "
+                                "Return ONLY valid JSON."
+                            )},
+                            {"role":"user","content":(
+                                f"Platform: {_post2.get('platform','')}\n"
+                                f"Title: {_ptitle2}\n"
+                                f"Description: {_post2.get('body','')[:400]}\n"
+                                f"Views: {_post2.get('views',0):,} | Likes: {_post2.get('likes',0):,}\n\n"
+                                f"Return JSON:\n"
+                                f'{{"hook_technique":"Pattern Interrupt","hook_text_pattern":"[Claim] — here\'s why",'
+                                f'"content_framework":"PAS","emotional_arc":"Curiosity → Tension → Relief",'
+                                f'"pacing":"fast, punchy sentences",'
+                                f'"why_it_works":"psychological mechanism in 1-2 sentences",'
+                                f'"script_flow":["Hook beat","Problem beat","Solution beat","Proof beat","CTA beat"],'
+                                f'"reusable_template":"[X] that [Y] — here\'s why [Z]",'
+                                f'"platform_signals":"what makes this feel native",'
+                                f'"tone":"direct"}}'
+                            )},
                         ],
-                        max_tokens=800,
-                        temperature=0.2,
+                        max_tokens=700, temperature=0.2,
                     )
-                    import json as _json
-                    _raw = _resp.choices[0].message.content.strip()
-                    _raw = __import__("re").sub(r"^```json\s*","",_raw)
-                    _raw = __import__("re").sub(r"^```\s*","",_raw)
-                    _raw = __import__("re").sub(r"\s*```$","",_raw)
-                    _ana = _json.loads(_raw)
-                    _results[_pid] = {"post": _post, "analysis": _ana}
-                except Exception as _ae:
-                    _results[_pid] = {
-                        "post": _post,
-                        "analysis": {
-                            "hook_technique": "Unknown",
-                            "hook_text_pattern": _ptitle,
-                            "content_framework": "PAS",
-                            "emotional_arc": "Curiosity → Tension → Relief",
-                            "pacing": "fast",
-                            "why_it_works": str(_ae),
-                            "script_flow": ["Hook","Problem","Solution","CTA"],
-                            "reusable_template": f"[Topic] — here's what nobody tells you",
-                            "platform_signals": f"Native to {_pplat}",
-                            "tone": "direct",
-                        }
-                    }
-                import time as _time; _time.sleep(0.3)
+                    _raw2 = _resp2.choices[0].message.content.strip()
+                    _raw2 = _re2.sub(r"^```json\s*","",_raw2)
+                    _raw2 = _re2.sub(r"^```\s*","",_raw2)
+                    _raw2 = _re2.sub(r"\s*```$","",_raw2)
+                    _ana2 = _json2.loads(_raw2)
+                    _results2[_pid2] = {"post":_post2,"analysis":_ana2}
+                except Exception as _ae2:
+                    _results2[_pid2] = {"post":_post2,"analysis":{
+                        "hook_technique":"Unknown","hook_text_pattern":_ptitle2,
+                        "content_framework":"PAS","emotional_arc":"Curiosity → Relief",
+                        "pacing":"medium","why_it_works":str(_ae2),
+                        "script_flow":["Hook","Problem","Solution","CTA"],
+                        "reusable_template":f"[Topic] — here's the truth nobody tells you",
+                        "platform_signals":"","tone":"direct",
+                    }}
+                _time_mod.sleep(0.3)
 
-            _an_prog.progress(100)
-            _an_stat.empty()
-            st.session_state["tr_analysis"] = _results
+            _an_prog2.progress(100); _an_stat2.empty()
+            st.session_state["tr_analysis"] = _results2
+            _analysis = _results2
             st.rerun()
 
-        # ── Display analysis cards ────────────────────────────────────────────
-        else:
-            _FRAME_COLORS = {
-                "Hero's Journey":"#7c3aed","AIDA":"#06b6d4","PAS":"#ef4444",
-                "BAB":"#f59e0b","Listicle":"#10b981","Curiosity Gap":"#ec4899",
-                "Story Loop":"#8b5cf6","Contrast Arc":"#3b82f6",
-            }
-            _sel_frames = []
-            _sel_hooks  = []
-            _sel_templates = []
+        # Display analysis cards
+        _FRAME_C2 = {"Hero's Journey":"#7c3aed","AIDA":"#06b6d4","PAS":"#ef4444","BAB":"#f59e0b",
+                     "Listicle":"#10b981","Curiosity Gap":"#ec4899","Story Loop":"#8b5cf6","Contrast Arc":"#3b82f6"}
+        _all_frames2=[]; _all_hooks2=[]; _all_templates2=[]
 
-            for _pid, _item in _analysis.items():
-                _post = _item["post"]
-                _ana  = _item["analysis"]
-                _ptitle = _post.get("title","")[:70]
-                _pplat  = _post.get("platform","")
-                _purl   = _post.get("url","")
-                _fc     = _FRAME_COLORS.get(_ana.get("content_framework",""),"#7c3aed")
+        for _pid2, _item2 in _analysis.items():
+            _post2 = _item2["post"]; _ana2 = _item2["analysis"]
+            _ptitle2= _post2.get("title","")[:65]
+            _pplat2 = _post2.get("platform","")
+            _purl2  = _post2.get("url","")
+            _fc2    = _FRAME_C2.get(_ana2.get("content_framework",""),"#7c3aed")
+            _all_frames2.append(_ana2.get("content_framework",""))
+            _all_hooks2.append(_ana2.get("hook_technique",""))
+            _all_templates2.append(_ana2.get("reusable_template",""))
 
-                _sel_frames.append(_ana.get("content_framework",""))
-                _sel_hooks.append(_ana.get("hook_technique",""))
-                _sel_templates.append(_ana.get("reusable_template",""))
-
-                with st.expander(f"🎬 **{_ptitle}** — {_pplat}", expanded=True):
-                    _ac1, _ac2 = st.columns([2,1])
-                    with _ac1:
-                        st.markdown(
-                            f'<div style="background:#0a0a14;border:1px solid {_fc}44;border-left:4px solid {_fc};'
-                            f'border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:8px">'
-                            f'<p style="color:{_fc};font-weight:700;font-size:0.72rem;margin:0 0 2px 0">🎣 HOOK TECHNIQUE</p>'
-                            f'<p style="color:#e8e8f0;margin:0 0 6px 0">{_ana.get("hook_technique","")}</p>'
-                            f'<p style="color:#6b6b8a;font-size:0.78rem;font-style:italic;margin:0">Pattern: "{_ana.get("hook_text_pattern","")}"</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
+            with st.expander(f"🎬 **{_ptitle2}** [{_pplat2}]", expanded=True):
+                _ac1, _ac2 = st.columns([3,1])
+                with _ac1:
+                    st.markdown(
+                        f'<div style="background:#0a0a14;border-left:4px solid {_fc2};border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:8px">'
+                        f'<p style="color:{_fc2};font-weight:700;font-size:0.7rem;margin:0 0 2px 0">🎣 HOOK: {_ana2.get("hook_technique","")}</p>'
+                        f'<p style="color:#c8c0e8;font-size:0.82rem;font-style:italic;margin:0">"{_ana2.get("hook_text_pattern","")}"</p>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                    _flow2 = _ana2.get("script_flow",[])
+                    if _flow2:
+                        _fhtml = "".join(
+                            f'<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid #0d0d1a">'
+                            f'<span style="color:#7c3aed;font-size:0.68rem;font-weight:700;min-width:18px">{_bi+1}</span>'
+                            f'<span style="color:#9090b0;font-size:0.76rem">{_beat}</span></div>'
+                            for _bi, _beat in enumerate(_flow2)
                         )
                         st.markdown(
-                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:10px 14px;margin-bottom:8px">'
-                            f'<p style="color:#06b6d4;font-weight:700;font-size:0.72rem;margin:0 0 4px 0">📖 CONTENT FRAMEWORK</p>'
-                            f'<span style="background:{_fc}22;color:{_fc};font-size:0.78rem;padding:2px 8px;border-radius:20px">{_ana.get("content_framework","")}</span>'
-                            f'<p style="color:#9090b0;font-size:0.78rem;margin:6px 0 0 0">{_ana.get("why_it_works","")}</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
+                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:9px 13px">'
+                            f'<p style="color:#f59e0b;font-size:0.68rem;font-weight:700;margin:0 0 5px 0">🎬 SCRIPT FLOW</p>'
+                            f'{_fhtml}</div>', unsafe_allow_html=True,
                         )
-                        # Script flow beats
-                        _flow = _ana.get("script_flow",[])
-                        if _flow:
-                            _flow_html = "".join(
-                                f'<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #0d0d1a">'
-                                f'<span style="color:#7c3aed;font-size:0.7rem;font-weight:700;min-width:20px">{_bi+1}</span>'
-                                f'<span style="color:#9090b0;font-size:0.78rem">{_beat}</span>'
-                                f'</div>'
-                                for _bi, _beat in enumerate(_flow)
-                            )
-                            st.markdown(
-                                f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:10px 14px">'
-                                f'<p style="color:#f59e0b;font-weight:700;font-size:0.72rem;margin:0 0 6px 0">🎬 SCRIPT FLOW</p>'
-                                f'{_flow_html}</div>',
-                                unsafe_allow_html=True,
-                            )
-                    with _ac2:
+                    st.markdown(
+                        f'<div style="background:#100a1f;border:1px solid #7c3aed33;border-radius:8px;padding:8px 12px;margin-top:6px">'
+                        f'<p style="color:#7c3aed;font-size:0.68rem;font-weight:700;margin:0 0 3px 0">📋 REUSABLE TEMPLATE</p>'
+                        f'<p style="color:#c8c0e8;font-size:0.82rem;font-style:italic;margin:0">"{_ana2.get("reusable_template","")}"</p>'
+                        f'</div>', unsafe_allow_html=True,
+                    )
+                with _ac2:
+                    for _label, _key, _clr in [
+                        ("📖 FRAMEWORK", "content_framework","#06b6d4"),
+                        ("💭 EMOTIONAL ARC","emotional_arc","#ec4899"),
+                        ("⚡ PACING","pacing","#10b981"),
+                        ("🗣️ TONE","tone","#7c3aed"),
+                    ]:
                         st.markdown(
-                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
-                            f'<p style="color:#ec4899;font-weight:700;font-size:0.72rem;margin:0 0 4px 0">💭 EMOTIONAL ARC</p>'
-                            f'<p style="color:#9090b0;font-size:0.8rem;margin:0">{_ana.get("emotional_arc","")}</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
+                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+                            f'<p style="color:{_clr};font-size:0.65rem;font-weight:700;margin:0 0 2px 0">{_label}</p>'
+                            f'<p style="color:#9090b0;font-size:0.75rem;margin:0">{_ana2.get(_key,"")}</p>'
+                            f'</div>', unsafe_allow_html=True,
                         )
+                    st.markdown(
+                        f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:8px 10px;margin-bottom:6px">'
+                        f'<p style="color:#f59e0b;font-size:0.65rem;font-weight:700;margin:0 0 2px 0">🧠 WHY IT WORKS</p>'
+                        f'<p style="color:#9090b0;font-size:0.72rem;margin:0">{_ana2.get("why_it_works","")}</p>'
+                        f'</div>', unsafe_allow_html=True,
+                    )
+                    if _purl2:
                         st.markdown(
-                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
-                            f'<p style="color:#10b981;font-weight:700;font-size:0.72rem;margin:0 0 4px 0">⚡ PACING</p>'
-                            f'<p style="color:#9090b0;font-size:0.78rem;margin:0">{_ana.get("pacing","")}</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
-                            f'<p style="color:#7c3aed;font-weight:700;font-size:0.72rem;margin:0 0 4px 0">🗣️ TONE</p>'
-                            f'<p style="color:#9090b0;font-size:0.78rem;margin:0">{_ana.get("tone","")}</p>'
-                            f'</div>',
-                            unsafe_allow_html=True,
-                        )
-                        if _purl:
-                            st.markdown(
-                                f'<a href="{_purl}" target="_blank" style="display:block;text-align:center;'
-                                f'background:#1a1a2e;color:#9090b0;border:1px solid #2a2a3e;border-radius:8px;'
-                                f'padding:7px;font-size:0.75rem;text-decoration:none;margin-bottom:8px">▶ Watch Original</a>',
-                                unsafe_allow_html=True,
-                            )
-                    # Reusable template
-                    _tmpl = _ana.get("reusable_template","")
-                    if _tmpl:
-                        st.markdown(
-                            f'<div style="background:#100a1f;border:1px solid #7c3aed44;border-radius:8px;padding:10px 14px;margin-top:4px">'
-                            f'<p style="color:#7c3aed;font-weight:700;font-size:0.72rem;margin:0 0 4px 0">📋 REUSABLE TEMPLATE</p>'
-                            f'<p style="color:#c8c0e8;font-size:0.85rem;font-style:italic;margin:0">"{_tmpl}"</p>'
-                            f'</div>',
+                            f'<a href="{_purl2}" target="_blank" style="display:block;text-align:center;'
+                            f'background:#1a1a2e;color:#9090b0;border:1px solid #2a2a3e;border-radius:8px;'
+                            f'padding:6px;font-size:0.72rem;text-decoration:none;margin-top:4px">▶ Watch Original</a>',
                             unsafe_allow_html=True,
                         )
 
-            st.markdown("")
-            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-            st.markdown("### 🎯 Patterns Extracted — Now Generate Your Script")
-
-            # Pattern summary
-            _dominant_frame = max(set(_sel_frames), key=_sel_frames.count) if _sel_frames else "PAS"
-            _dominant_hook  = max(set(_sel_hooks),  key=_sel_hooks.count)  if _sel_hooks  else "Pattern Interrupt"
-
-            _sum_cols = st.columns(3)
-            _sum_cols[0].markdown(
-                f'<div class="score-card"><div class="score-number" style="font-size:1rem;color:#06b6d4">{_dominant_frame}</div>'
-                f'<div class="score-label">Dominant Framework</div></div>', unsafe_allow_html=True)
-            _sum_cols[1].markdown(
-                f'<div class="score-card"><div class="score-number" style="font-size:1rem;color:#ec4899">{_dominant_hook}</div>'
-                f'<div class="score-label">Dominant Hook</div></div>', unsafe_allow_html=True)
-            _sum_cols[2].markdown(
-                f'<div class="score-card"><div class="score-number" style="color:#7c3aed">{len(_analysis)}</div>'
-                f'<div class="score-label">Videos Analysed</div></div>', unsafe_allow_html=True)
-
-            st.markdown("")
-            _gc1, _gc2, _gc3 = st.columns(3)
-            if _gc1.button("← Back to Browse", key="tr_back_browse"):
-                st.session_state["tr_step"] = "browse"; st.rerun()
-            if _gc2.button("🔄 Re-analyse", key="tr_reanalyse"):
-                st.session_state["tr_analysis"] = {}; st.rerun()
-            if _gc3.button("✍️ Generate Script →", type="primary", key="tr_go_gen"):
-                st.session_state["tr_step"] = "generate"; st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STEP 4 — GENERATE SCRIPT
-    # ══════════════════════════════════════════════════════════════════════════
-    elif _cur_step == "generate":
-        _analysis  = st.session_state["tr_analysis"]
-        _topic_lbl = st.session_state.get("tr_topic","")
-
-        # Build pattern context from analyses
-        _pattern_blocks = []
-        _all_templates  = []
-        _all_frames     = []
-        _all_hooks      = []
-        _all_flows      = []
-
-        for _pid, _item in _analysis.items():
-            _ana = _item["analysis"]
-            _post = _item["post"]
-            _all_templates.append(_ana.get("reusable_template",""))
-            _all_frames.append(_ana.get("content_framework",""))
-            _all_hooks.append(_ana.get("hook_technique",""))
-            _flow_str = " → ".join(_ana.get("script_flow",[]))
-            _all_flows.append(_flow_str)
-            _pattern_blocks.append(
-                f'VIDEO ({_post.get("platform","")}: {_post.get("title","")[:50]})\n'
-                f'  Hook: {_ana.get("hook_technique","")} — "{_ana.get("hook_text_pattern","")[:80]}"\n'
-                f'  Framework: {_ana.get("content_framework","")}\n'
-                f'  Emotional arc: {_ana.get("emotional_arc","")}\n'
-                f'  Flow: {_flow_str}\n'
-                f'  Template: {_ana.get("reusable_template","")}\n'
-                f'  Pacing: {_ana.get("pacing","")}\n'
-                f'  Why it works: {_ana.get("why_it_works","")}'
-            )
-
-        _dominant_frame = max(set(_all_frames), key=_all_frames.count) if _all_frames else "PAS"
-        _dominant_hook  = max(set(_all_hooks),  key=_all_hooks.count)  if _all_hooks  else "Pattern Interrupt"
-        _pattern_context = "\n\n".join(_pattern_blocks)
-
-        st.markdown("### ✍️ Generate Your Script")
-        st.markdown(
-            '<p style="color:#6b6b8a;font-size:0.85rem">'
-            'The AI will use the exact hook patterns, frameworks, and flow structures '
-            'from your selected videos — adapted to your topic and brand.</p>',
-            unsafe_allow_html=True,
+        # Pattern summary + generate
+        _dom_frame2 = max(set(_all_frames2), key=_all_frames2.count) if _all_frames2 else "PAS"
+        _dom_hook2  = max(set(_all_hooks2),  key=_all_hooks2.count)  if _all_hooks2  else "Pattern Interrupt"
+        _pattern_ctx2 = "\n".join(
+            f"[{_item2['post'].get('platform','')}] {_item2['post'].get('title','')[:50]} → "
+            f"Hook: {_item2['analysis'].get('hook_technique','')} | "
+            f"Framework: {_item2['analysis'].get('content_framework','')} | "
+            f"Template: {_item2['analysis'].get('reusable_template','')}"
+            for _item2 in _analysis.values()
         )
 
-        # Show detected patterns
-        with st.expander("📋 Patterns being used", expanded=False):
-            st.markdown("**Dominant framework:** " + _dominant_frame)
-            st.markdown("**Dominant hook:** " + _dominant_hook)
-            st.markdown("**Templates extracted:**")
-            for _t in _all_templates:
-                if _t: st.markdown(f'- *"{_t}"*')
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        st.markdown("## ✍️ Generate Your Script")
 
-        st.markdown("")
         _gf1, _gf2 = st.columns([2,3])
-
         with _gf1:
             st.markdown("#### ⚙️ Script Settings")
-            _gs_topic    = st.text_input("Your topic / product *", value=_topic_lbl, key="tr_gen_topic",
-                                          placeholder="What is your script about?")
-            _gs_platform = st.selectbox("Platform", ["TikTok","YouTube Shorts","Instagram Reels","YouTube Long-form","LinkedIn"], key="tr_gen_plat")
-            _gs_duration = st.selectbox("Duration", ["15 seconds","30 seconds","60 seconds","90 seconds","3 minutes"], key="tr_gen_dur")
-            _gs_tone     = st.selectbox("Tone", ["Conversational","Authoritative","Inspirational","Urgent","Humorous","Educational","Empathetic","Bold"], key="tr_gen_tone")
-
-            # Pre-fill from detected patterns
-            _fw_list = list(EMOTIONAL_FRAMEWORKS.keys())
-            _fw_idx  = _fw_list.index(_dominant_frame) if _dominant_frame in _fw_list else 0
-            _gs_fw   = st.selectbox("Framework (pre-filled from analysis)", _fw_list, index=_fw_idx, key="tr_gen_fw")
-
-            _hk_list = list(HOOK_TYPES.keys())
-            _hk_idx  = _hk_list.index(_dominant_hook) if _dominant_hook in _hk_list else 0
-            _gs_hook = st.selectbox("Hook type (pre-filled from analysis)", _hk_list, index=_hk_idx, key="tr_gen_hook")
-
-            _gs_emotions = st.multiselect("Emotions to trigger", EQ_EMOTIONS, default=["Curiosity","Inspiration"], key="tr_gen_emo")
-            _gs_conds    = st.text_area("Special conditions", height=60, key="tr_gen_conds",
-                                         placeholder="e.g. mention your offer, specific CTA, product name...")
-            _gs_use_brand = st.checkbox("Use brand context", value=get_document_count()>0 or _bw_is_complete(st), key="tr_gen_brand")
+            _gs_topic2   = st.text_input("Your topic *", value=st.session_state.get("tr_niche",""), key="tr2_topic")
+            _gs_plat2    = st.selectbox("Platform", ["TikTok","YouTube Shorts","Instagram Reels","YouTube Long-form","LinkedIn"], key="tr2_plat")
+            _gs_dur2     = st.selectbox("Duration", ["15 seconds","30 seconds","60 seconds","90 seconds"], key="tr2_dur")
+            _gs_tone2    = st.selectbox("Tone", ["Conversational","Authoritative","Inspirational","Urgent","Humorous","Educational","Empathetic","Bold"], key="tr2_tone")
+            _fw_list2    = list(EMOTIONAL_FRAMEWORKS.keys())
+            _fw_idx2     = _fw_list2.index(_dom_frame2) if _dom_frame2 in _fw_list2 else 0
+            _gs_fw2      = st.selectbox("Framework (from analysis)", _fw_list2, index=_fw_idx2, key="tr2_fw")
+            _hk_list2    = list(HOOK_TYPES.keys())
+            _hk_idx2     = _hk_list2.index(_dom_hook2) if _dom_hook2 in _hk_list2 else 0
+            _gs_hook2    = st.selectbox("Hook type (from analysis)", _hk_list2, index=_hk_idx2, key="tr2_hook")
+            _gs_emo2     = st.multiselect("Emotions", EQ_EMOTIONS, default=["Curiosity","Inspiration"], key="tr2_emo")
+            _gs_conds2   = st.text_area("Special conditions", height=55, key="tr2_conds")
+            _gs_brand2   = st.checkbox("Use brand context", value=get_document_count()>0 or _bw_is_complete(st), key="tr2_brand")
 
         with _gf2:
             st.markdown("#### 📄 Generated Script")
-            _gen_btn = st.button("⚡ Generate with Extracted Patterns", type="primary", use_container_width=True, key="tr_gen_btn")
+            if st.button("⚡ Generate with Extracted Patterns", type="primary", use_container_width=True, key="tr2_gen"):
+                _brand_ctx2 = ""
+                if _gs_brand2:
+                    if _bw_is_complete(st): _brand_ctx2 = _bw_get_ctx(st)
+                    elif get_document_count() > 0: _brand_ctx2 = query_brand_context(f"{_gs_topic2} script", top_k=5)
 
-            _tr_script = st.session_state.get("tr_script","")
-
-            if _gen_btn and _gs_topic.strip():
-                # Build brand context
-                _brand_ctx_tr = ""
-                if _gs_use_brand:
-                    if _bw_is_complete(st):
-                        _brand_ctx_tr = _bw_get_ctx(st)
-                    elif get_document_count() > 0:
-                        _brand_ctx_tr = query_brand_context(f"{_gs_topic} {_gs_tone} script", top_k=5)
-
-                # Build pattern context string for injection
-                _pattern_injection = (
-                    f"VIRAL PATTERN INTELLIGENCE — extracted from {len(_analysis)} real viral videos:\n\n"
-                    f"{_pattern_context}\n\n"
-                    f"INSTRUCTIONS FOR USE:\n"
-                    f"- Use the dominant hook pattern: {_dominant_hook}\n"
-                    f"- Apply the dominant framework: {_dominant_frame}\n"
-                    f"- Mirror the script flow beats from the analysed videos\n"
-                    f"- Use the reusable templates as structural guides — adapt to '{_gs_topic}'\n"
-                    f"- Match the pacing and emotional arc patterns\n"
-                    f"- Do NOT copy the original content — extract the pattern, apply to new topic\n"
+                _pattern_inj2 = (
+                    f"VIRAL PATTERN INTELLIGENCE from {len(_analysis)} selected viral videos:\n{_pattern_ctx2}\n\n"
+                    f"Apply: dominant hook = {_dom_hook2} · dominant framework = {_dom_frame2}\n"
+                    f"Mirror the script flow beats. Use templates as structural guides adapted to '{_gs_topic2}'.\n"
+                    f"Do NOT copy original content — extract the PATTERN, apply to new topic."
                 )
-
-                _scrout = st.empty()
-                _full_s = ""
-
+                _out2 = st.empty(); _full2 = ""
                 try:
-                    _stream = generate_script(
-                        client,
-                        topic             = _gs_topic,
-                        platform          = _gs_platform,
-                        duration          = _gs_duration,
-                        tone              = _gs_tone,
-                        hook_type         = _gs_hook,
-                        emotional_framework = _gs_fw,
-                        target_emotions   = _gs_emotions,
-                        conditions        = (_gs_conds or "") + "\n\nPATTERN CONTEXT:\n" + _pattern_injection[:800],
-                        brand_context     = _brand_ctx_tr,
-                        brand_intelligence = "",
-                        topic_research    = "",
-                        creator_style     = "",
-                        trend_data        = f"Trending patterns from {len(_analysis)} viral videos on {_gs_platform}",
-                    )
-                    for _chunk in _stream:
-                        if "<!-- ROUTER:" in _chunk: break
-                        _full_s += _chunk
-                        _scrout.markdown(f'<div class="script-output">{_full_s}▌</div>', unsafe_allow_html=True)
-                except Exception as _ge:
-                    st.error(f"Generation error: {_ge}")
-                    _full_s = ""
+                    for _chunk2 in generate_script(
+                        client, topic=_gs_topic2, platform=_gs_plat2, duration=_gs_dur2,
+                        tone=_gs_tone2, hook_type=_gs_hook2, emotional_framework=_gs_fw2,
+                        target_emotions=_gs_emo2,
+                        conditions=(_gs_conds2 or "") + "\n\nPATTERN CONTEXT:\n" + _pattern_inj2[:700],
+                        brand_context=_brand_ctx2, brand_intelligence="",
+                        topic_research="", creator_style="",
+                        trend_data=f"Trending patterns from {len(_analysis)} viral videos",
+                    ):
+                        if "<!-- ROUTER:" in _chunk2: break
+                        _full2 += _chunk2
+                        _out2.markdown(f'<div class="script-output">{_full2}▌</div>', unsafe_allow_html=True)
+                except Exception as _ge2:
+                    st.error(f"Generation error: {_ge2}")
 
-                if _full_s:
-                    _scrout.markdown(f'<div class="script-output">{_full_s}</div>', unsafe_allow_html=True)
-                    st.session_state["tr_script"]     = _full_s
-                    st.session_state["last_script"]   = _full_s
-                    st.session_state["chat_script_context"] = _full_s
-
-            elif _tr_script:
-                st.markdown(f'<div class="script-output">{_tr_script}</div>', unsafe_allow_html=True)
+                if _full2:
+                    _out2.markdown(f'<div class="script-output">{_full2}</div>', unsafe_allow_html=True)
+                    st.session_state["tr_script"]           = _full2
+                    st.session_state["last_script"]         = _full2
+                    st.session_state["chat_script_context"] = _full2
+                    st.session_state["tr_step"]             = "generate"
 
             if st.session_state.get("tr_script"):
                 _dl1, _dl2 = st.columns(2)
                 _dl1.download_button("⬇️ Download", st.session_state["tr_script"],
-                    file_name=f"script_{_gs_topic[:20].replace(' ','_')}.txt", mime="text/plain", key="tr_dl")
-                if _dl2.button("💬 Send to Script Chat", key="tr_send_chat"):
+                    file_name="script_from_research.txt", mime="text/plain", key="tr2_dl")
+                if _dl2.button("💬 Send to Script Chat", key="tr2_chat"):
                     st.session_state["chat_script_context"] = st.session_state["tr_script"]
                     st.success("✓ Sent to Script Chat!")
 
         st.markdown("")
-        if st.button("← Back to Pattern Analysis", key="tr_back_analyse"):
-            st.session_state["tr_step"] = "analyse"; st.rerun()
-        if st.button("🔍 Start New Research", key="tr_restart"):
-            for _k2 in ["tr_posts","tr_topic","tr_selected","tr_analysis","tr_script"]:
-                st.session_state[_k2] = [] if _k2 in ("tr_posts","tr_selected") else ({} if _k2=="tr_analysis" else "")
-            st.session_state["tr_step"] = "search"; st.rerun()
+        _ra1, _ra2 = st.columns(2)
+        if _ra1.button("🔄 Clear Selection & Restart", key="tr2_restart"):
+            st.session_state["tr_selected"] = []
+            st.session_state["tr_analysis"] = {}
+            st.session_state["tr_script"]   = ""
+            st.session_state["tr_step"]     = "browse"
+            st.rerun()
+        if _ra2.button("🔁 Re-extract Patterns", key="tr2_reextract"):
+            st.session_state["tr_analysis"] = {}
+            st.session_state["tr_step"] = "analyse"
+            st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TAB 3 — AUTO-REFRESH SETTINGS
+    # ══════════════════════════════════════════════════════════════════════════
+    with _tab_settings:
+        st.markdown("### ⚙️ Auto-Refresh Settings")
+        st.markdown(
+            '<p style="color:#6b6b8a;font-size:0.85rem">'
+            'Configure which niches are tracked and how often the system refreshes. '
+            'Refresh runs automatically on page load when the interval has passed — '
+            'no server or cron job needed.</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("")
+
+        _set1, _set2 = st.columns(2)
+
+        with _set1:
+            st.markdown("#### 🎯 Tracked Niches")
+            st.markdown('<p style="color:#6b6b8a;font-size:0.78rem">These topics are researched automatically every refresh cycle.</p>', unsafe_allow_html=True)
+
+            # Show existing niches
+            for _ni_idx, _ni in enumerate(_ar_niches):
+                _ni_data = _ar_cache.get("niches",{}).get(_ni, {})
+                _ni_count= _ni_data.get("count", 0)
+                _ni_time = _ni_data.get("fetched_label","Not fetched")
+                _nc1, _nc2 = st.columns([4,1])
+                _nc1.markdown(
+                    f'<div style="background:#0a0a14;border:1px solid #1e1e30;border-radius:8px;'
+                    f'padding:8px 12px;margin-bottom:4px">'
+                    f'<span style="color:#e8e8f0;font-weight:600">{_ni}</span><br>'
+                    f'<span style="color:#4a4a6a;font-size:0.7rem">{_ni_count} videos · {_ni_time}</span>'
+                    f'</div>', unsafe_allow_html=True,
+                )
+                if _nc2.button("✕", key=f"rm_niche_{_ni_idx}"):
+                    remove_niche(_ni)
+                    st.rerun()
+
+            st.markdown("")
+            _new_niche_input = st.text_input(
+                "Add niche",
+                placeholder="e.g. meal prep, real estate tips, crypto news...",
+                label_visibility="collapsed",
+                key="new_niche_inp",
+            )
+            if st.button("+ Add Niche", key="add_niche_btn"):
+                if _new_niche_input.strip():
+                    add_niche(_new_niche_input.strip())
+                    st.success(f"✓ Added: {_new_niche_input.strip()}")
+                    st.rerun()
+
+        with _set2:
+            st.markdown("#### 🔄 Refresh Schedule")
+            _new_interval = st.select_slider(
+                "Refresh every",
+                options=[1, 6, 12, 24, 48, 72],
+                value=_ar_interval,
+                format_func=lambda x: f"{x}h",
+                key="interval_slider",
+            )
+            if _new_interval != _ar_interval:
+                set_interval(_new_interval)
+                st.success(f"✓ Interval set to every {_new_interval}h")
+                st.rerun()
+
+            st.markdown("")
+            _new_plats = st.multiselect(
+                "Platforms to include",
+                ["YouTube","TikTok","Instagram","Reddit"],
+                default=_ar_platforms,
+                key="auto_plats_sel",
+            )
+            if set(_new_plats) != set(_ar_platforms) and _new_plats:
+                set_platforms(_new_plats)
+                st.rerun()
+
+            st.markdown("")
+            _new_enabled = st.toggle("Auto-refresh enabled", value=_ar_enabled, key="auto_enabled_tog")
+            if _new_enabled != _ar_enabled:
+                set_enabled(_new_enabled)
+                st.rerun()
+
+            st.markdown("")
+            st.markdown("#### ⚡ Manual Control")
+            if st.button("🔄 Refresh All Niches Now", type="primary", use_container_width=True, key="settings_refresh_now"):
+                _sr_prog = st.progress(0)
+                def _sr_cb(pct, msg):
+                    _sr_prog.progress(pct, text=msg)
+                with st.spinner("Running full refresh..."):
+                    run_auto_research(_yt_api_key, _ra_key, _sr_cb)
+                st.success("✅ All niches refreshed!")
+                st.rerun()
+
+            if st.button("🗑️ Clear All Cached Data", key="clear_cache_btn"):
+                import os as _os2
+                for _fp in (CACHE_PATH, SETTINGS_PATH):
+                    try: _os2.remove(_fp)
+                    except: pass
+                st.warning("Cache cleared. Settings reset to defaults.")
+                st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════
