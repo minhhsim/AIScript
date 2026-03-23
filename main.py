@@ -352,81 +352,481 @@ with st.sidebar:
 
 
 # ════════════════════════════════════════════════════════════════════
-# PAGE: BRAND SETUP
+# PAGE: BRAND SETUP — Workshop + PDF upload
 # ════════════════════════════════════════════════════════════════════
 if current_page == "brand":
-    st.markdown("# 🎯 Brand Intelligence Setup")
-    st.markdown('<p style="color:#6b6b8a">Upload brand documents to power context-aware script generation with RAG.</p>', unsafe_allow_html=True)
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
     from modules.brand_rag import ingest_brand_document, get_brand_summary, clear_brand_documents, get_document_count
+    from modules.brand_workshop import (
+        MODULES, ARCHETYPES, BRAND_VALUES, VOICE_ADJECTIVES,
+        PRICE_POSITIONS, PLATFORMS, HOOK_STYLES, CTA_STYLES,
+        synthesise_brand_context, get_answers, save_answers,
+        get_context, set_context, is_complete, reset_workshop,
+        WORKSHOP_KEY, CONTEXT_KEY, COMPLETE_KEY,
+    )
     from utils.document_parser import parse_document
 
-    col1, col2 = st.columns([3, 2])
+    # Session state
+    if "bw_step" not in st.session_state: st.session_state["bw_step"] = 0
+    if "bw_mode" not in st.session_state: st.session_state["bw_mode"] = "choose"  # choose / workshop / pdf
+    if WORKSHOP_KEY not in st.session_state: st.session_state[WORKSHOP_KEY] = {}
 
-    with col1:
-        st.markdown("### 📁 Upload Brand Documents")
-        st.markdown('<p style="color:#6b6b8a;font-size:0.85rem">Supports PDF, DOCX, TXT — brand guides, tone of voice docs, target market research, product sheets.</p>', unsafe_allow_html=True)
+    _answers  = st.session_state[WORKSHOP_KEY]
+    _step     = st.session_state["bw_step"]
+    _mode     = st.session_state["bw_mode"]
+    _complete = is_complete(st)
+    _ctx      = get_context(st)
 
-        uploaded = st.file_uploader(
-            "Drop files here",
-            type=["pdf", "docx", "txt"],
-            accept_multiple_files=True,
-            label_visibility="collapsed"
-        )
+    # ── Header ────────────────────────────────────────────────────────────────
+    st.markdown("# 🎯 Brand Intelligence Setup")
+    st.markdown(
+        '<p style="color:#6b6b8a">Complete the Brand Workshop to give every script your exact voice, '
+        'audience, and rules — or upload existing brand documents.</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-        if uploaded:
-            if st.button("⚡ Ingest Documents into Brand Memory"):
-                progress = st.progress(0)
-                total_chunks = 0
-                for i, f in enumerate(uploaded):
-                    with st.spinner(f"Processing {f.name}..."):
-                        text = parse_document(f)
-                        chunks = ingest_brand_document(text, f.name)
-                        total_chunks += chunks
-                    progress.progress((i + 1) / len(uploaded))
+    # ── Status strip ──────────────────────────────────────────────────────────
+    _doc_count = get_document_count()
+    _sstatus_cols = st.columns(3)
+    _sstatus_cols[0].markdown(
+        f'<div class="score-card"><div class="score-number" style="color:{"#10b981" if _complete else "#4a4a6a"}">'
+        f'{"✓" if _complete else "○"}</div><div class="score-label">Workshop Complete</div></div>',
+        unsafe_allow_html=True)
+    _sstatus_cols[1].markdown(
+        f'<div class="score-card"><div class="score-number" style="color:{"#7c3aed" if _doc_count > 0 else "#4a4a6a"}">'
+        f'{_doc_count}</div><div class="score-label">PDF Chunks Indexed</div></div>',
+        unsafe_allow_html=True)
+    _sstatus_cols[2].markdown(
+        f'<div class="score-card"><div class="score-number" style="color:{"#10b981" if (_complete or _doc_count>0) else "#4a4a6a"}">'
+        f'{"✓ Active" if (_complete or _doc_count>0) else "Not set"}</div>'
+        f'<div class="score-label">Brand RAG Status</div></div>',
+        unsafe_allow_html=True)
+    st.markdown("")
 
-                st.success(f"✅ Ingested {len(uploaded)} documents ({total_chunks} knowledge chunks)")
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    if _mode == "choose" and not _complete and _doc_count == 0:
+        st.markdown("### How do you want to set up your brand?")
+        _mc1, _mc2 = st.columns(2)
+        with _mc1:
+            st.markdown(
+                '<div style="background:#0d0d1a;border:1px solid #7c3aed44;border-radius:12px;padding:20px;text-align:center">'
+                '<div style="font-size:2rem">🏗️</div>'
+                '<p style="color:#e8e8f0;font-weight:700;margin:8px 0 4px 0">Brand Workshop</p>'
+                '<p style="color:#6b6b8a;font-size:0.82rem">Answer 6 modules of guided questions.<br>'
+                'Best results. Takes ~20 min.<br>Inspired by wowai.ch brand methodology.</p>'
+                '</div>', unsafe_allow_html=True)
+            if st.button("🏗️ Start Brand Workshop", use_container_width=True, key="start_workshop"):
+                st.session_state["bw_mode"] = "workshop"
+                st.rerun()
+        with _mc2:
+            st.markdown(
+                '<div style="background:#0d0d1a;border:1px solid #06b6d444;border-radius:12px;padding:20px;text-align:center">'
+                '<div style="font-size:2rem">📁</div>'
+                '<p style="color:#e8e8f0;font-weight:700;margin:8px 0 4px 0">Upload Documents</p>'
+                '<p style="color:#6b6b8a;font-size:0.82rem">Upload existing brand guides, PDFs,<br>'
+                'tone-of-voice docs, or paste text.<br>Works with any existing brand assets.</p>'
+                '</div>', unsafe_allow_html=True)
+            if st.button("📁 Upload Brand Documents", use_container_width=True, key="start_pdf"):
+                st.session_state["bw_mode"] = "pdf"
                 st.rerun()
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # WORKSHOP MODE
+    # ══════════════════════════════════════════════════════════════════════════
+    elif _mode == "workshop" and not _complete:
+
+        # Progress bar across top
+        _prog_pct = int(_step / len(MODULES) * 100)
+        st.progress(_prog_pct, text=f"Module {_step + 1} of {len(MODULES)} — {MODULES[_step]['title']}")
+
+        # Module nav pills
+        _nav_cols = st.columns(len(MODULES))
+        for _ni, _nm in enumerate(MODULES):
+            _is_done = _ni < _step
+            _is_cur  = _ni == _step
+            _nc      = "#10b981" if _is_done else "#7c3aed" if _is_cur else "#2a2a3a"
+            _nav_cols[_ni].markdown(
+                f'<div style="background:{_nc}22;border:1px solid {_nc};border-radius:8px;'
+                f'padding:6px 4px;text-align:center;cursor:pointer">'
+                f'<div style="font-size:0.9rem">{"✓" if _is_done else _nm["icon"]}</div>'
+                f'<div style="color:{"#10b981" if _is_done else "#e8e8f0" if _is_cur else "#4a4a6a"};'
+                f'font-size:0.6rem;font-weight:600">{_nm["title"]}</div>'
+                f'</div>', unsafe_allow_html=True)
+        st.markdown("")
+
+        # ── MODULE 0: Identity & Scope ────────────────────────────────────────
+        if _step == 0:
+            st.markdown("## 🏢 Module 0 — Identity & Scope")
+            st.markdown('<p style="color:#6b6b8a">What your brand is and the boundaries it operates within.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">Inspired by wowai Setup & Scope module</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m0", {})
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _m0_name     = st.text_input("Brand / Company Name *", value=_a.get("name",""), placeholder="e.g. Nova Fitness, CleanSkin Co.")
+                _m0_industry = st.text_input("Industry / Category *", value=_a.get("industry",""), placeholder="e.g. Fitness coaching, Skincare, SaaS")
+                _m0_offer    = st.text_area("What do you offer? *", value=_a.get("offer",""), height=80,
+                                             placeholder="The specific product or service. Be concrete.\ne.g. '1-on-1 online personal training for busy mums aged 30-45'")
+                _m0_price    = st.select_slider("Price Position", PRICE_POSITIONS,
+                                                 value=_a.get("price", PRICE_POSITIONS[1]))
+            with _c2:
+                _m0_markets  = st.text_input("Target Markets / Regions", value=_a.get("markets",""),
+                                              placeholder="e.g. UK women 28-40, US SME owners, Global Gen Z")
+                _m0_channels = st.multiselect("Primary Channels", PLATFORMS,
+                                               default=_a.get("channels", ["TikTok","Instagram Reels"]))
+                _m0_nogos    = st.text_area("Brand No-Gos *", value=_a.get("nogos",""), height=100,
+                                             placeholder="What must this brand NEVER be, say, or do?\ne.g. Never be aggressive, never mention competitors by name, never use formal language")
+
+            if st.button("Continue →", key="m0_next", type="primary"):
+                if _m0_name.strip() and _m0_industry.strip() and _m0_offer.strip():
+                    _answers["m0"] = {
+                        "name": _m0_name, "industry": _m0_industry, "offer": _m0_offer,
+                        "price": _m0_price, "markets": _m0_markets,
+                        "channels": _m0_channels, "nogos": _m0_nogos,
+                    }
+                    save_answers(st, _answers)
+                    st.session_state["bw_step"] = 1
+                    st.rerun()
+                else:
+                    st.error("Fill in Brand Name, Industry, and What You Offer to continue.")
+
+        # ── MODULE 1: DNA & Purpose ───────────────────────────────────────────
+        elif _step == 1:
+            st.markdown("## 🧬 Module 1 — DNA & Purpose")
+            st.markdown('<p style="color:#6b6b8a">Why you exist and what drives everything you do.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">Inspired by wowai Company DNA + Purpose Engine modules</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m1", {})
+            _m1_mission   = st.text_area("Mission — why does this brand exist? *", value=_a.get("mission",""), height=80,
+                                          placeholder="Not your tagline. The real reason.\ne.g. 'To prove that fitness doesn't require punishing yourself — it requires understanding your body'")
+            _m1_belief    = st.text_area("Core belief — what do you fight for? *", value=_a.get("belief",""), height=70,
+                                          placeholder="The one controversial-but-true thing your brand stands behind.\ne.g. 'Most diet culture is designed to make you fail so you keep buying'")
+            _m1_values    = st.multiselect("Brand Values (pick 3-5)", BRAND_VALUES,
+                                            default=_a.get("values", ["Authenticity","Community","Education"]),
+                                            max_selections=5)
+            _m1_feeling   = st.text_input("After seeing your content, your audience should feel...",
+                                           value=_a.get("feeling",""),
+                                           placeholder="e.g. understood, inspired to start, like someone finally gets them")
+            _m1_enemy     = st.text_input("What is your brand fighting against? (the 'villain')",
+                                           value=_a.get("enemy",""),
+                                           placeholder="e.g. diet culture, corporate greed, overcomplicated skincare routines, gym bro culture")
+
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button("← Back", key="m1_back"):
+                st.session_state["bw_step"] = 0; st.rerun()
+            if _bc2.button("Continue →", key="m1_next", type="primary"):
+                if _m1_mission.strip() and _m1_belief.strip():
+                    _answers["m1"] = {
+                        "mission": _m1_mission, "belief": _m1_belief,
+                        "values": _m1_values, "feeling": _m1_feeling, "enemy": _m1_enemy,
+                    }
+                    save_answers(st, _answers)
+                    st.session_state["bw_step"] = 2; st.rerun()
+                else:
+                    st.error("Fill in Mission and Core Belief to continue.")
+
+        # ── MODULE 2: Your Audience ───────────────────────────────────────────
+        elif _step == 2:
+            st.markdown("## 👥 Module 2 — Your Audience")
+            st.markdown('<p style="color:#6b6b8a">Who you speak to and what lives inside their heads. Be hyper-specific — no demographics, real people.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">Inspired by wowai Personas & Stakeholders module</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m2", {})
+            _m2_who = st.text_area("Describe your ideal viewer as a specific person *", value=_a.get("who",""), height=90,
+                                    placeholder="Not 'women 25-40'. A real person.\ne.g. 'Sarah, 34, working mum, 2 kids, squeezes workouts in at 6am, scrolls TikTok after the kids are in bed, feels guilty she can't commit to a gym'")
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _m2_pain = st.text_area("Their #1 pain point *", value=_a.get("pain",""), height=80,
+                                         placeholder="What keeps them up at night? What have they already tried and failed?\ne.g. 'Starts every Monday, gives up by Wednesday, blames her lack of willpower but it's actually the wrong system'")
+                _m2_desire = st.text_area("Their deepest desire *", value=_a.get("desire",""), height=80,
+                                           placeholder="Not what they say they want — what they REALLY want.\ne.g. 'To feel confident in photos without obsessing over food every day'")
+                _m2_before = st.text_input("What are they doing before they find you?",
+                                            value=_a.get("before",""),
+                                            placeholder="e.g. doom-scrolling fitness influencers who make them feel worse, buying programmes they never start")
+            with _c2:
+                _m2_words = st.text_area("Words YOUR AUDIENCE actually uses (not brand words) *", value=_a.get("words",""), height=80,
+                                          placeholder="Their exact vocabulary. What they type, say, DM.\ne.g. 'I'm so tired', 'I just want to feel normal', 'I don't have time', 'nothing works for me', 'I hate my body'")
+                _m2_consume = st.text_input("What content do they consume? Who else do they follow?",
+                                             value=_a.get("consume",""),
+                                             placeholder="e.g. @sydneycummings_, The Food Medic, anything by Steph Fit Mum")
+                _m2_objection = st.text_input("Their #1 objection before buying / following",
+                                               value=_a.get("objection",""),
+                                               placeholder="e.g. 'I've tried everything and nothing works', 'I can't afford it', 'I don't have time'")
+
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button("← Back", key="m2_back"):
+                st.session_state["bw_step"] = 1; st.rerun()
+            if _bc2.button("Continue →", key="m2_next", type="primary"):
+                if _m2_who.strip() and _m2_pain.strip():
+                    _answers["m2"] = {
+                        "who": _m2_who, "pain": _m2_pain, "desire": _m2_desire,
+                        "before": _m2_before, "words": _m2_words,
+                        "consume": _m2_consume, "objection": _m2_objection,
+                    }
+                    save_answers(st, _answers)
+                    st.session_state["bw_step"] = 3; st.rerun()
+                else:
+                    st.error("Fill in Who and Pain Point to continue.")
+
+        # ── MODULE 3: What Makes You Different ───────────────────────────────
+        elif _step == 3:
+            st.markdown("## ⚡ Module 3 — What Makes You Different")
+            st.markdown('<p style="color:#6b6b8a">Your USP, specific proof points, and why you beat alternatives. No fluff — evidence only.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">Inspired by wowai Value Proposition + Competition modules</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m3", {})
+            _m3_usp = st.text_area("Your #1 USP in one sentence *", value=_a.get("usp",""), height=70,
+                                    placeholder="What ONLY you can say? Must be specific and provable.\ne.g. 'The only 15-minute home workout programme designed specifically for post-partum bodies — no gym, no equipment, no guilt'")
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _m3_proof1 = st.text_input("Proof point 1 (specific result or credential) *", value=_a.get("proof1",""),
+                                            placeholder="e.g. '2,300 clients in 18 months', '94% of clients lose 5kg in 8 weeks'")
+                _m3_proof2 = st.text_input("Proof point 2", value=_a.get("proof2",""),
+                                            placeholder="e.g. 'Trained by a certified post-natal physio', '4.9 stars, 600 reviews'")
+                _m3_proof3 = st.text_input("Proof point 3", value=_a.get("proof3",""),
+                                            placeholder="e.g. 'As seen in Women's Health', 'Used by NHS physiotherapists'")
+            with _c2:
+                _m3_comp = st.text_input("Main competitor / alternative", value=_a.get("comp",""),
+                                          placeholder="e.g. generic gym membership, YouTube free workouts, Kayla Itsines BBG")
+                _m3_vscomp = st.text_area("Why are you better?", value=_a.get("vscomp",""), height=80,
+                                           placeholder="Not 'we care more'. Specific.\ne.g. 'BBG was designed for 22-year-olds with no kids. Our programme was built around real post-partum physiology'")
+                _m3_price_justify = st.text_input("If premium priced — what justifies the price?",
+                                                    value=_a.get("price_justify",""),
+                                                    placeholder="e.g. '1-on-1 check-ins every week', 'lifetime access', 'custom nutrition plan included'")
+
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button("← Back", key="m3_back"):
+                st.session_state["bw_step"] = 2; st.rerun()
+            if _bc2.button("Continue →", key="m3_next", type="primary"):
+                if _m3_usp.strip() and _m3_proof1.strip():
+                    _answers["m3"] = {
+                        "usp": _m3_usp, "proof1": _m3_proof1, "proof2": _m3_proof2,
+                        "proof3": _m3_proof3, "comp": _m3_comp, "vscomp": _m3_vscomp,
+                        "price_justify": _m3_price_justify,
+                    }
+                    save_answers(st, _answers)
+                    st.session_state["bw_step"] = 4; st.rerun()
+                else:
+                    st.error("Fill in USP and at least one proof point to continue.")
+
+        # ── MODULE 4: Brand Voice ────────────────────────────────────────────
+        elif _step == 4:
+            st.markdown("## 🎙️ Module 4 — Brand Voice")
+            st.markdown('<p style="color:#6b6b8a">Your archetype, personality, and exactly how you sound — not theory, actual rules the AI can follow.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">Inspired by wowai Archetypes + Tone of Voice modules</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m4", {})
+
+            # Archetype picker
+            st.markdown("**Brand Archetype** — pick the one that fits most")
+            _arch_cols = st.columns(4)
+            _selected_arch = _a.get("archetype", "The Creator")
+            for _ai, (_arch_name, _arch_desc) in enumerate(ARCHETYPES.items()):
+                _col = _arch_cols[_ai % 4]
+                _is_sel = (_arch_name == _selected_arch)
+                _abg    = "#7c3aed22" if _is_sel else "#0a0a14"
+                _abrd   = "2px solid #7c3aed" if _is_sel else "1px solid #1e1e30"
+                if _col.button(
+                    f"{'✓ ' if _is_sel else ''}{_arch_name}",
+                    key=f"arch_{_ai}",
+                    help=_arch_desc,
+                ):
+                    _selected_arch = _arch_name
+
+            st.markdown(f'<div class="info-box" style="margin:8px 0">**{_selected_arch}** — {ARCHETYPES[_selected_arch]}</div>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _m4_adjectives = st.multiselect("3 personality adjectives (pick exactly 3)", VOICE_ADJECTIVES,
+                                                  default=_a.get("adjectives", ["Warm","Direct","Inspiring"]),
+                                                  max_selections=3)
+                _m4_soundslike = st.text_input("Your brand sounds like... (celebrity, creator, or character)",
+                                                value=_a.get("soundslike",""),
+                                                placeholder="e.g. Brené Brown but funnier, Gary Vee with less shouting, your smartest friend who just got back from therapy")
+                _m4_always     = st.text_area("Always say / words you use", value=_a.get("always",""), height=80,
+                                               placeholder="Phrases, words, sentence starters you always use.\ne.g. 'real talk', 'here's the thing', 'I promise you', 'babe', contractions always")
+            with _c2:
+                _m4_never      = st.text_area("Never say / words to avoid *", value=_a.get("never",""), height=80,
+                                               placeholder="Banned vocabulary and phrases.\ne.g. 'leverage', 'synergy', 'excited to announce', 'content creator journey', formal intros")
+                _m4_sample     = st.text_area("Write ONE sentence in your brand voice *", value=_a.get("sample",""), height=80,
+                                               placeholder="One sentence that sounds EXACTLY like your brand — this is the tone target for every script.\ne.g. 'Look — I'm not going to tell you it's easy. But I will tell you it's worth it.'")
+                _m4_energy     = st.select_slider("Energy level", ["Low/Calm","Medium/Grounded","High/Energetic","Very High/Hype"],
+                                                   value=_a.get("energy","Medium/Grounded"))
+
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button("← Back", key="m4_back"):
+                st.session_state["bw_step"] = 3; st.rerun()
+            if _bc2.button("Continue →", key="m4_next", type="primary"):
+                if len(_m4_adjectives) == 3 and _m4_never.strip() and _m4_sample.strip():
+                    _answers["m4"] = {
+                        "archetype": _selected_arch, "adjectives": _m4_adjectives,
+                        "soundslike": _m4_soundslike, "always": _m4_always,
+                        "never": _m4_never, "sample": _m4_sample, "energy": _m4_energy,
+                    }
+                    save_answers(st, _answers)
+                    st.session_state["bw_step"] = 5; st.rerun()
+                else:
+                    st.error("Pick 3 adjectives and fill in Never Say and Sample Sentence.")
+
+        # ── MODULE 5: Script Rules ───────────────────────────────────────────
+        elif _step == 5:
+            st.markdown("## 📋 Module 5 — Script Rules")
+            st.markdown('<p style="color:#6b6b8a">The specific patterns, hooks, and rules that make YOUR content work. This is what separates you from generic AI scripts.</p>', unsafe_allow_html=True)
+            st.markdown('<p style="color:#4a4a6a;font-size:0.75rem">ContentIQ exclusive — Script Intelligence layer</p>', unsafe_allow_html=True)
+            st.markdown("")
+
+            _a = _answers.get("m5", {})
+            _c1, _c2 = st.columns(2)
+            with _c1:
+                _m5_hook_pref  = st.selectbox("Preferred hook style", HOOK_STYLES,
+                                               index=HOOK_STYLES.index(_a.get("hook_pref", HOOK_STYLES[6])) if _a.get("hook_pref") in HOOK_STYLES else 6)
+                _m5_cta_pref   = st.selectbox("Preferred CTA style", CTA_STYLES,
+                                               index=CTA_STYLES.index(_a.get("cta_pref", CTA_STYLES[0])) if _a.get("cta_pref") in CTA_STYLES else 0)
+                _m5_always_inc = st.text_area("Always include in scripts", value=_a.get("always_inc",""), height=80,
+                                               placeholder="Topics, features, phrases, values to always reference.\ne.g. 'mention the 15-minute promise', 'always reference being a mum', 'always use the word real'")
+                _m5_never_inc  = st.text_area("Never include in scripts", value=_a.get("never_inc",""), height=80,
+                                               placeholder="Topics, claims, phrases to always avoid.\ne.g. 'never mention weight loss', 'never promise specific numbers', 'no before/after framing'")
+            with _c2:
+                _m5_best       = st.text_area("Your best-performing content so far", value=_a.get("best",""), height=90,
+                                               placeholder="Describe or paste your most viral/successful post/video.\nWhat made it work? What was the hook? What did people comment?\ne.g. 'The video where I said I ate chocolate every day and still lost weight — 800k views, hook was the pattern interrupt'")
+                _m5_signature  = st.text_input("Signature phrase or recurring element",
+                                                value=_a.get("signature",""),
+                                                placeholder="e.g. 'Until next time, be kind to your body', the 'check' hand gesture, always ending with a question")
+                _m5_content_types = st.multiselect("Content types you create most", 
+                                                     ["Educational tips","Storytime","Day in my life","Transformation","Controversy/hot take","Tutorial","Review","Q&A","Challenge","Behind the scenes"],
+                                                     default=_a.get("content_types", ["Educational tips","Storytime"]))
+
+            st.markdown("")
+            _bc1, _bc2 = st.columns(2)
+            if _bc1.button("← Back", key="m5_back"):
+                st.session_state["bw_step"] = 4; st.rerun()
+            if _bc2.button("⚡ Generate Brand Intelligence", key="m5_finish", type="primary"):
+                _answers["m5"] = {
+                    "hook_pref": _m5_hook_pref, "cta_pref": _m5_cta_pref,
+                    "always_inc": _m5_always_inc, "never_inc": _m5_never_inc,
+                    "best": _m5_best, "signature": _m5_signature,
+                    "content_types": _m5_content_types,
+                }
+                save_answers(st, _answers)
+
+                with st.spinner("🧠 Groq is synthesising your brand intelligence..."):
+                    _brand_ctx = synthesise_brand_context(client, _answers)
+
+                # Also ingest into RAG
+                from modules.brand_rag import ingest_brand_document
+                _brand_name = _answers.get("m0",{}).get("name","Brand")
+                ingest_brand_document(_brand_ctx, f"Brand Workshop — {_brand_name}")
+
+                set_context(st, _brand_ctx)
+                st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # WORKSHOP COMPLETE — show result + options
+    # ══════════════════════════════════════════════════════════════════════════
+    elif _complete:
+        _brand_name = _answers.get("m0",{}).get("name","Your Brand")
+        st.markdown(f"### ✅ Brand Intelligence Active — **{_brand_name}**")
+        st.markdown(
+            '<div class="info-box" style="border-color:#10b981">'
+            '🟢 Brand context is loaded into every script. Your scripts will now use your exact voice, '
+            'audience language, USPs, and script rules automatically.'
+            '</div>', unsafe_allow_html=True)
+        st.markdown("")
+
+        # Show synthesised context
+        with st.expander("📄 View your Brand Intelligence Brief", expanded=False):
+            st.markdown(_ctx)
+
+        st.markdown("")
+        _rc1, _rc2, _rc3 = st.columns(3)
+        if _rc1.button("🔄 Redo Workshop", key="redo_workshop"):
+            reset_workshop(st)
+            clear_brand_documents()
+            st.session_state["bw_step"] = 0
+            st.session_state["bw_mode"] = "choose"
+            st.rerun()
+        if _rc2.button("📁 Also upload PDF docs", key="also_pdf"):
+            st.session_state["bw_mode"] = "pdf"
+            st.rerun()
+        if _rc3.button("✍️ Go generate scripts", key="go_gen"):
+            st.session_state["current_page"] = "generator"
+            st.rerun()
+
+        # Also show PDF upload section below
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-        # Manual text input
-        st.markdown("### ✏️ Or Paste Brand Information")
-        manual_text = st.text_area(
-            "Brand description, values, target audience...",
-            placeholder="We are [Brand Name], a [category] brand targeting [audience]. Our tone is [adjectives]. Our key values are...",
-            height=160,
-            label_visibility="collapsed"
-        )
-        manual_name = st.text_input("Document name", value="Manual Brand Input")
-
-        if st.button("💾 Save Brand Information"):
-            if manual_text.strip():
-                chunks = ingest_brand_document(manual_text, manual_name)
-                st.success(f"✅ Saved ({chunks} chunks indexed)")
+        st.markdown("### 📁 Add Supporting Documents")
+        st.markdown('<p style="color:#6b6b8a;font-size:0.85rem">Optionally supplement your workshop with existing brand documents.</p>', unsafe_allow_html=True)
+        _pdf_up = st.file_uploader("Drop files", type=["pdf","docx","txt"], accept_multiple_files=True, label_visibility="collapsed")
+        if _pdf_up:
+            if st.button("⚡ Ingest Documents", key="ingest_extra"):
+                from utils.document_parser import parse_document
+                _total = 0
+                for _f in _pdf_up:
+                    _txt = parse_document(_f)
+                    _total += ingest_brand_document(_txt, _f.name)
+                st.success(f"✅ {len(_pdf_up)} documents added ({_total} chunks)")
                 st.rerun()
 
-    with col2:
-        st.markdown("### 🧠 Brand Intelligence Summary")
-        doc_count = get_document_count()
+    # ══════════════════════════════════════════════════════════════════════════
+    # PDF MODE
+    # ══════════════════════════════════════════════════════════════════════════
+    elif _mode == "pdf":
+        st.markdown("### 📁 Upload Brand Documents")
+        st.markdown('<p style="color:#6b6b8a;font-size:0.85rem">PDF, DOCX, TXT — brand guides, tone of voice docs, product sheets, target audience research.</p>', unsafe_allow_html=True)
 
-        if doc_count > 0:
-            st.markdown(f'<div class="score-card"><div class="score-number">{doc_count}</div><div class="score-label">Knowledge Chunks Indexed</div></div>', unsafe_allow_html=True)
-            st.markdown("")
+        _col1, _col2 = st.columns([3,2])
+        with _col1:
+            _uploaded = st.file_uploader("Drop files here", type=["pdf","docx","txt"],
+                                          accept_multiple_files=True, label_visibility="collapsed")
+            if _uploaded:
+                if st.button("⚡ Ingest into Brand Memory", key="ingest_pdf"):
+                    from utils.document_parser import parse_document
+                    _prog = st.progress(0); _total_c = 0
+                    for _i, _f in enumerate(_uploaded):
+                        _txt = parse_document(_f)
+                        _total_c += ingest_brand_document(_txt, _f.name)
+                        _prog.progress((_i+1)/len(_uploaded))
+                    st.success(f"✅ {len(_uploaded)} documents ingested ({_total_c} chunks)")
+                    st.rerun()
 
-            if st.button("🔍 Generate Brand Summary"):
-                with st.spinner("Analyzing brand documents..."):
-                    summary = get_brand_summary(client)
-                st.markdown('<div class="section-card">' + summary.replace('\n', '<br>') + '</div>', unsafe_allow_html=True)
+            st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+            st.markdown("### ✏️ Or Paste Brand Text")
+            _manual = st.text_area("Brand info", label_visibility="collapsed", height=140,
+                                    placeholder="Paste brand guide text, values, target audience, tone of voice rules...")
+            _mname  = st.text_input("Document name", value="Manual Brand Input")
+            if st.button("💾 Save", key="save_manual"):
+                if _manual.strip():
+                    _n = ingest_brand_document(_manual, _mname)
+                    st.success(f"✅ Saved ({_n} chunks)")
+                    st.rerun()
 
-            st.markdown("")
-            if st.button("🗑️ Clear All Brand Documents"):
-                clear_brand_documents()
-                st.warning("Brand memory cleared.")
-                st.rerun()
-        else:
-            st.markdown('<div class="section-card"><p style="color:#6b6b8a;text-align:center;padding:40px 0">No documents indexed yet.<br>Upload brand files to activate RAG.</p></div>', unsafe_allow_html=True)
+        with _col2:
+            st.markdown("### 🧠 Status")
+            if _doc_count > 0:
+                st.markdown(f'<div class="score-card"><div class="score-number">{_doc_count}</div><div class="score-label">Chunks Indexed</div></div>', unsafe_allow_html=True)
+                st.markdown("")
+                if st.button("🔍 Generate Summary", key="pdf_summary"):
+                    with st.spinner("Analysing..."):
+                        _sum = get_brand_summary(client)
+                    st.markdown(_sum)
+                if st.button("🗑️ Clear All", key="pdf_clear"):
+                    clear_brand_documents()
+                    st.warning("Cleared.")
+                    st.rerun()
+            else:
+                st.info("No documents yet.")
+
+        st.markdown("")
+        if st.button("← Back to setup options", key="back_to_choose"):
+            st.session_state["bw_mode"] = "choose"; st.rerun()
+        if st.button("🏗️ Switch to Brand Workshop instead", key="switch_workshop"):
+            st.session_state["bw_mode"] = "workshop"; st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -740,7 +1140,12 @@ elif current_page == "generator":
     from modules.script_generator import generate_script, EMOTIONAL_FRAMEWORKS, HOOK_TYPES, EQ_EMOTIONS
     from modules.brand_rag import query_brand_context, get_document_count
     from modules.brand_intelligence import research_brand, get_topic_research
+    from modules.brand_workshop import get_context as _bw_get_ctx, is_complete as _bw_is_complete
     from ddgs import DDGS
+
+    # Workshop state
+    _bw_complete = _bw_is_complete(st)
+    _bw_context  = _bw_get_ctx(st)
 
     # Inject framework from analyzer recommendation if set
     default_fw   = st.session_state.get("pending_rewrite_framework", list(EMOTIONAL_FRAMEWORKS.keys())[0])
@@ -787,9 +1192,24 @@ elif current_page == "generator":
             key="gen_brand_input"
         )
 
-        use_rag    = st.checkbox("📎 Use uploaded brand docs (RAG)", value=get_document_count() > 0)
+        use_rag    = st.checkbox("📎 Use brand context (RAG + Workshop)", value=get_document_count() > 0 or _bw_complete)
         use_trends = st.checkbox("🔥 Pull live trend data", value=True)
         use_topic_research = st.checkbox("🔍 Research topic facts from web", value=True)
+
+        # Show workshop status
+        if _bw_complete:
+            _bw_name = st.session_state.get("brand_workshop_answers",{}).get("m0",{}).get("name","Brand")
+            st.markdown(
+                f'<div class="info-box" style="border-color:#10b981">🧬 <strong>Workshop:</strong> {_bw_name} brand intelligence active</div>',
+                unsafe_allow_html=True)
+        elif get_document_count() > 0:
+            st.markdown(
+                f'<div class="info-box" style="border-color:#7c3aed">📎 <strong>{get_document_count()} brand chunks</strong> indexed from documents</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                '<div class="warn-box">No brand context — <a href="?page=brand" style="color:#7c3aed">complete Brand Workshop</a> for best results</div>',
+                unsafe_allow_html=True)
 
         # Show injected creator style if set
         creator_style_name = st.session_state.get("creator_style_name","")
@@ -829,12 +1249,19 @@ elif current_page == "generator":
   <p style="color:#6b6b8a;font-size:0.78rem;margin:0">{bi_profile.get("mission","")[:120]}</p>
 </div>""", unsafe_allow_html=True)
 
-            # ── Step 2: RAG context ──────────────────────────────────────────
+            # ── Step 2: Brand context — workshop first, then RAG docs ─────────
             brand_ctx = ""
             if use_rag:
-                status.markdown('<div class="info-box">📎 Loading brand documents...</div>', unsafe_allow_html=True)
+                status.markdown('<div class="info-box">🧬 Loading brand intelligence...</div>', unsafe_allow_html=True)
                 prog.progress(25)
-                brand_ctx = query_brand_context(f"{topic} {tone} {platform} script", top_k=6)
+                # Priority 1: Workshop synthesised context
+                if _bw_complete:
+                    brand_ctx = _bw_context
+                # Priority 2: RAG from uploaded docs
+                if not brand_ctx or get_document_count() > 0:
+                    _rag_ctx = query_brand_context(f"{topic} {tone} {platform} script", top_k=6)
+                    if _rag_ctx:
+                        brand_ctx = (brand_ctx + "\n\n" + _rag_ctx).strip()
 
             # ── Step 3: Topic research ────────────────────────────────────────
             topic_facts = ""
